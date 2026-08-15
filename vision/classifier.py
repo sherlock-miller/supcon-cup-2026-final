@@ -4,13 +4,13 @@
 支持任意类别集合（场景/几何体形状），自动生成中英文 prompt 模板。
 
 任务3 形状分类 + 备用的场景分类都走这里。
+
+注意：torch/numpy 延迟导入 — 无 ML 环境时模块仍可导入，
+模型加载失败走降级路径（predict 返回默认标签）。
 """
-import torch
-import numpy as np
-from PIL import Image
-from typing import Dict, Any, Optional, List
 import logging
 import os
+from typing import Dict, Any, Optional, List
 
 from config import CLASSIFY_LABELS, SHAPE_LABELS
 
@@ -31,6 +31,7 @@ class CLIPClassifier:
     """CLIP 零样本分类器（通用）"""
 
     def __init__(self, labels: Optional[List[str]] = None):
+        import torch
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.labels = labels if labels is not None else SHAPE_LABELS
         self.model = None
@@ -39,6 +40,7 @@ class CLIPClassifier:
         self._init_model()
 
     def _init_model(self):
+        import torch
         try:
             from transformers import CLIPProcessor, CLIPModel
             model_name = "openai/clip-vit-base-patch32"
@@ -73,14 +75,17 @@ class CLIPClassifier:
 
     def _warmup(self):
         try:
+            from PIL import Image
             dummy = Image.new("RGB", (224, 224))
             _ = self.predict(dummy)
             logger.info("CLIP 预热完成")
         except Exception:
             pass
 
-    def predict(self, image: Image.Image) -> Dict[str, Any]:
+    def predict(self, image) -> Dict[str, Any]:
         """CLIP 零样本分类"""
+        import torch
+        import numpy as np
         if self.model is None:
             return {"label": self.labels[0], "confidence": 0.0}
 

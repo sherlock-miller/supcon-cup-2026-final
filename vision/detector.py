@@ -1,12 +1,11 @@
 """
 目标检测 — Grounding DINO 开放词汇检测
 输入图片 + 类别名文本（如 "defect . valve"）→ 输出目标框
+
+注意：torch/numpy 延迟导入（同 classifier.py）
 """
-import torch
-import numpy as np
-from PIL import Image
-from typing import Dict, Any, Optional
 import logging
+from typing import Dict, Any, Optional
 
 from config import DETECT_LABELS, DETECT_MODEL_PATH
 
@@ -21,6 +20,7 @@ class GroundingDinoDetector:
     """Grounding DINO 开放词汇目标检测器"""
 
     def __init__(self):
+        import torch
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
         self.processor = None
@@ -45,10 +45,11 @@ class GroundingDinoDetector:
 
     def predict(
         self,
-        image: Image.Image,
+        image,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """开放词汇目标检测"""
+        import torch
         if self.model is None:
             return {"targets": []}
 

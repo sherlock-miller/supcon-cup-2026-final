@@ -1,12 +1,12 @@
 """
 OCR 文字识别 — EasyOCR (PyTorch)
 工业铭牌/仪表中文文字识别 + 后处理纠错
+
+注意：numpy 延迟导入（同 classifier.py）
 """
 import re
 import logging
-import numpy as np
 from typing import Dict, Any, Optional
-from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -94,10 +94,11 @@ class OCREngine:
         except Exception as e:
             logger.error(f"EasyOCR 初始化异常: {e}")
 
-    def predict(self, image: Image.Image) -> Dict[str, Any]:
+    def predict(self, image) -> Dict[str, Any]:
         if not self.available or self.reader is None:
             return {"text": ""}
 
+        import numpy as np
         arr = np.array(image.convert("RGB"))
 
         try:
