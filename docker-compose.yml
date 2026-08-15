@@ -1,0 +1,21 @@
+version: "3.8"
+
+# 现场运行配置
+# 关键: network_mode: host — 机械臂(8087)和灵巧手 HTTP 服务跑在宿主机上
+# USB 设备透传 — Gemini335 相机
+services:
+  wangwang-final:
+    image: wangwang-final:latest
+    container_name: wangwang_final
+    network_mode: host
+    privileged: true          # USB 设备访问
+    volumes:
+      # 模型缓存目录（可选：模型已在镜像内，此处留空挂载点供现场调参）
+      - ./现场配置:/app/现场配置
+    environment:
+      - ALGO_PORT=5000
+      - ARM_BASE_URL=http://127.0.0.1:8087
+      - HAND_BASE_URL=http://127.0.0.1:5001
+    stdin_open: true
+    tty: true
+    restart: unless-stopped

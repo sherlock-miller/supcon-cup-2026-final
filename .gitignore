@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 模型权重（不进 git）
+*.pt
+*.pth
+weights/
+
+# 现场配置（每台操作台不同）
+现场配置/
+
+# 构建产物
+汪汪队决赛镜像.tar
+
+# 日志
+*.log
+
+# 临时文件
+clipboard_temp.png
+temp_pdf/
