@@ -46,10 +46,11 @@ FINAL_DETECT_PROMPTS: Dict[str, List[str]] = {
         "开关", "按钮", "拨杆",
         "button", "toggle switch", "switch",
     ],
-    # 任务2：长方体转运块
+    # 任务2：长方体转运块（俯拍顶面为方形，词表覆盖多种描述，
+    # 不包含数字相关词——方块顶面的数字由 OCR 阶段独立识别）
     "cube": [
-        "长方体", "方块", "木块",
-        "cuboid", "rectangular block", "box",
+        "长方体", "方块", "木块", "立方体",
+        "cuboid", "rectangular block", "box", "cube", "block", "square",
     ],
     # 任务3：几何体
     "shape": [

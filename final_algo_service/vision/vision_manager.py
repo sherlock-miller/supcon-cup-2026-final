@@ -8,8 +8,8 @@
     HSV 颜色空间亮灯检测（红/黄/绿，V 阈值区分亮灭）→ 颜色→灯号映射
     → 布局先验验证（垂直/水平三分兜底）→ DINO 检测兜底
   任务2 detect_cube_numbers：
-    方块区域检测（DINO → 传统 CV 矩形检测）→ 区域裁剪
-    → 单数字识别（EasyOCR → 模板匹配 → 几何规则）
+    方块区域检测（DINO → 传统 CV 补充合并）→ 区域裁剪
+    → 单数字识别（EasyOCR ↔ 模板匹配交叉验证 + 数字1几何先验）
   任务3 detect_and_classify_shapes：
     几何体检测（DINO → 传统 CV 轮廓分割）→ CLIP 多模板分类
     + 传统 CV 几何特征分类（圆形度/顶点数/长宽比，俯拍视角）
@@ -404,14 +404,18 @@ class VisionManager:
         检测四个长方体上的数字（1-4）。
 
         策略：
-        1. 方块区域检测：DINO 优先 → 传统 CV 矩形检测兜底
+        1. 方块区域检测：DINO 优先 → 传统 CV 矩形检测补充合并
+           （DINO 检出数不足时 CV 补齐，IoU 去重；DINO 完全无结果时 CV 全量兜底）
         2. 每个方块顶面裁剪（向内收缩避开描边）
-        3. 单数字识别：EasyOCR → 模板匹配兜底（只认 1-4）
+        3. 单数字识别：EasyOCR ↔ 模板匹配交叉验证（只认 1-4）
         4. 数字去重（每个数字唯一，保留置信度最高的方块）
 
         返回: [{"number": 1, "cx": 320, "cy": 240, "confidence": 0.9, ...}]
               按数字排序
         """
+        from config import CUBE_SLOTS
+        expected_blocks = len(CUBE_SLOTS.get("slot_positions", {})) or 4
+
         # ---- 步骤1：方块区域检测 ----
         blocks: List[Dict[str, Any]] = []
 
@@ -429,10 +433,19 @@ class VisionManager:
             except Exception as e:
                 logger.warning(f"DINO 方块检测异常: {e}")
 
-        if not blocks:
-            # 传统 CV 矩形检测兜底
+        if len(blocks) < expected_blocks:
+            # 传统 CV 矩形检测补充：DINO 部分漏检时补齐（IoU 去重）
             try:
+                from vision.detector import _box_iou
                 for b in self._detect_blocks_cv(image):
+                    if not b.get("bbox"):
+                        continue
+                    if any(
+                        blk.get("bbox")
+                        and _box_iou(b["bbox"], blk["bbox"]) > 0.5
+                        for blk in blocks
+                    ):
+                        continue
                     blocks.append({**b, "score": 0.7, "method": "cv"})
             except Exception as e:
                 logger.warning(f"传统 CV 方块检测异常: {e}")

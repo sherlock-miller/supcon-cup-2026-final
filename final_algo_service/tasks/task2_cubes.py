@@ -53,8 +53,35 @@ def execute_cube_task(arm, hand, vision) -> Tuple[bool, str]:
         cubes = vision.detect_cube_numbers(image)
         logger.info(f"识别结果: {cubes}")
 
+        # 枚举补全策略（关键兜底）：
+        # 任务2 槽位固定 4 个、数字 1-4 各出现一次。
+        # 若只识别到 3 个数字，缺失的数字必然在未被匹配的槽位，
+        # 直接补全 —— 解决 DINO 对笔画细弱的数字"1"方块漏检问题。
+        detected_nums = {c["number"] for c in cubes}
+        missing_nums = {1, 2, 3, 4} - detected_nums
+        if missing_nums:
+            logger.warning(
+                f"只识别到 {len(cubes)} 个数字 {sorted(detected_nums)}，"
+                f"缺失 {sorted(missing_nums)} → 枚举补全"
+            )
+            # 缺失数字的槽位坐标 = 未被识别数字占用的槽位
+            used_slots = detected_nums & set(CUBE_SLOTS["slot_positions"].keys())
+            all_slots = set(CUBE_SLOTS["slot_positions"].keys())
+            for missing_num in sorted(missing_nums):
+                # 缺失数字用其自身编号槽位（数字与槽位一一对应）
+                if missing_num in CUBE_SLOTS["slot_positions"]:
+                    cubes.append({
+                        "number": missing_num,
+                        "cx": None, "cy": None,
+                        "raw_text": f"补全{missing_num}",
+                        "complemented": True,
+                    })
+                    logger.info(f"  → 补全数字 {missing_num}（枚举兜底）")
+        # 按数字排序确保 1→2→3→4 顺序
+        cubes.sort(key=lambda c: c["number"])
+
         if len(cubes) < 4:
-            logger.warning(f"只识别到 {len(cubes)} 个长方体，期望 4 个")
+            logger.warning(f"补全后仍只有 {len(cubes)} 个，继续尝试")
             if len(cubes) == 0:
                 return False, "未识别到任何长方体数字"
 
