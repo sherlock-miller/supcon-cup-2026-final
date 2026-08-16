@@ -28,9 +28,14 @@ def execute_shape_task(arm, hand, vision) -> Tuple[bool, str]:
     返回 (ok, message)
     """
     try:
-        # 步骤 1: 检查硬件
+        # 步骤 1: 检查硬件连接 + 电机使能
         if not arm.check_connection():
             return False, "机械臂连接失败"
+        try:
+            arm.enable()
+            logger.info("机械臂已使能")
+        except Exception as e:
+            logger.warning(f"使能失败（可能开机已自动使能，继续执行）: {e}")
 
         # 步骤 2: 初始化视觉
         vision.initialize()
@@ -117,8 +122,8 @@ def execute_shape_task(arm, hand, vision) -> Tuple[bool, str]:
                 arm.move_linear(x=pick_x, y=pick_y, z=approach_z, speed=0.08)
 
                 # 5e. 移到目标槽位上方
-                logger.info(f"移动到 {shape} 槽位上方: ({place_x:.3f}, {place_y:.3f}, {place_z + 0.10:.3f})")
-                arm.move_linear(x=place_x, y=place_y, z=place_z + 0.10, speed=0.12)
+                logger.info(f"移动到 {shape} 槽位上方: ({place_x:.3f}, {place_y:.3f}, {place_z + 0.05:.3f})")
+                arm.move_linear(x=place_x, y=place_y, z=place_z + 0.05, speed=0.12)
 
                 # 5f. 下降放置
                 logger.info(f"放置: ({place_x:.3f}, {place_y:.3f}, {place_z:.3f})")
@@ -129,7 +134,7 @@ def execute_shape_task(arm, hand, vision) -> Tuple[bool, str]:
                 time.sleep(0.2)
 
                 # 5h. 上升
-                arm.move_linear(x=place_x, y=place_y, z=place_z + 0.10, speed=0.08)
+                arm.move_linear(x=place_x, y=place_y, z=place_z + 0.05, speed=0.08)
 
                 successful += 1
                 logger.info(f"{shape} 分拣完成")

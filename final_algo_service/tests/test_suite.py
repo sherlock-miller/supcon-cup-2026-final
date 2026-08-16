@@ -81,17 +81,21 @@ class TestImports:
 
 
 class TestCoordinateMath:
+    # 显式单位位姿：隔离网络（arm_pose=None 会尝试读 /api/pose）
+    DEFAULT_POSE = {"x": 0.0, "y": 0.0, "z": 0.0,
+                    "roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+
     def test_optical_center(self):
         from vision.vision_manager import VisionManager
         vm = VisionManager()
-        x, y, z = vm.pixel_to_arm_coord(320, 240, 1000.0, arm_pose=None)
+        x, y, z = vm.pixel_to_arm_coord(320, 240, 1000.0, arm_pose=self.DEFAULT_POSE)
         assert abs(x) < 1e-6 and abs(y) < 1e-6
         assert abs(z - 1.0) < 1e-6
 
     def test_pixel_scale(self):
         from vision.vision_manager import VisionManager
         vm = VisionManager()
-        x, y, z = vm.pixel_to_arm_coord(920, 240, 1000.0, arm_pose=None)
+        x, y, z = vm.pixel_to_arm_coord(920, 240, 1000.0, arm_pose=self.DEFAULT_POSE)
         assert abs(x - 1.0) < 0.01
 
     def test_arm_pose_transform(self):

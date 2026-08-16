@@ -70,6 +70,13 @@ class ArmClient:
             resp = self.session.post(url, json=data, timeout=timeout)
             resp.raise_for_status()
             result = resp.json()
+            # 官方 enable/disable 响应为嵌套格式 {"right"/"left": {"success":...}}
+            # （键名随工作区），其余端点为顶层 {"success":...}——统一兼容
+            if "success" not in result:
+                for key in ("right", "left"):
+                    if key in result and isinstance(result[key], dict):
+                        result = result[key]
+                        break
             if not result.get("success", False):
                 raise ArmError(f"POST {path} 业务失败: {result.get('message', 'unknown')}")
             return result

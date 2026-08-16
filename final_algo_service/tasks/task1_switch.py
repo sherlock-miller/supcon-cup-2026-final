@@ -30,12 +30,16 @@ def execute_switch_task(arm, hand, vision) -> Tuple[bool, str]:
         (ok, message)
     """
     try:
-        # 步骤 1: 确保机械臂使能
-        logger.info("检查机械臂状态...")
+        # 步骤 1: 检查硬件连接 + 电机使能（官方流程: enable 后电机才上力）
         if not arm.check_connection():
             return False, "机械臂连接失败"
+        try:
+            arm.enable()
+            logger.info("机械臂已使能")
+        except Exception as e:
+            logger.warning(f"使能失败（可能开机已自动使能，继续执行）: {e}")
 
-        # 步骤 2: 初始化视觉模型
+        # 步骤 2: 初始化视觉
         vision.initialize()
 
         # 步骤 3: 移动到拍照位置
@@ -128,13 +132,14 @@ def _press_button(arm, hand, x: float, y: float, z: float) -> Tuple[bool, str]:
     3. 线性推进按按钮
     4. 退回
     """
+    from config import ARM_WORKSPACE_Z
     try:
         # 准备手指（单指伸出）
         logger.info("准备按按钮手势...")
         hand.grasp_object("button")
 
-        # 移动到按钮前方（+5cm Z）
-        approach_z = z + 0.05
+        # 移动到按钮前方（+5cm Z，钳制在工作域内）
+        approach_z = min(ARM_WORKSPACE_Z[1], z + 0.05)
         logger.info(f"接近按钮: ({x:.3f}, {y:.3f}, {approach_z:.3f})")
         arm.move_linear(x=x, y=y, z=approach_z, speed=0.08)
 
@@ -165,13 +170,14 @@ def _flip_toggle(arm, hand, x: float, y: float, z: float) -> Tuple[bool, str]:
     注意：微信群确认拨杆支持上下双向拨动。
     策略：先向下拨，如果灯没灭再向上拨。
     """
+    from config import ARM_WORKSPACE_Z
     try:
         # 两指捏合手势
         logger.info("准备拨动开关手势...")
         hand.grasp_object("toggle")
 
-        # 移动到拨杆位置
-        approach_z = z + 0.05
+        # 移动到拨杆位置（+5cm Z，钳制在工作域内）
+        approach_z = min(ARM_WORKSPACE_Z[1], z + 0.05)
         logger.info(f"接近拨杆: ({x:.3f}, {y:.3f}, {approach_z:.3f})")
         arm.move_linear(x=x, y=y, z=approach_z, speed=0.08)
 
