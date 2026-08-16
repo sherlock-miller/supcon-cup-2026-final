@@ -213,6 +213,74 @@ class ArmClient:
         logger.info("回 home 位姿...")
         return self.move_joints(ARM_HOME_JOINTS)
 
+    # ---------- 示教与回放（现场调试利器） ----------
+
+    def teach_mode(self, enable: bool = True) -> Dict[str, Any]:
+        """
+        示教模式开关（官方文档 §3.12）
+        enable=True: 电机切零力矩，手臂可自由拖动（自动开始录制）
+        enable=False: 恢复位置控制
+        ⚠️ 示教期间运动接口不可用
+        """
+        logger.info(f"{'进入' if enable else '退出'}示教模式...")
+        return self._post("/api/teach_mode", data={"enable": enable}, timeout=20)
+
+    def teach_record(self, command: str = "start", filename: str = "") -> Dict[str, Any]:
+        """
+        示教录制控制（官方文档 §3.11）
+        command: start / stop / save / cancel
+        filename: save 时必填（相对名自动存 ~/trajectories/）
+        """
+        data = {"command": command}
+        if filename:
+            data["filename"] = filename
+        logger.info(f"示教录制 {command} {filename}")
+        return self._post("/api/teach", data=data, timeout=15)
+
+    def playback(
+        self,
+        trajectory_id: str,
+        speed_scale: float = 1.0,
+        loop_count: int = 1,
+    ) -> Dict[str, Any]:
+        """
+        轨迹回放（官方文档 §3.13）
+        阻塞至回放完成（服务器上限 300s）
+        """
+        logger.info(f"回放轨迹 {trajectory_id} (speed={speed_scale}x, loops={loop_count})")
+        return self._post(
+            "/api/playback",
+            data={
+                "trajectory_id": trajectory_id,
+                "speed_scale": speed_scale,
+                "loop_count": loop_count,
+            },
+            timeout=310,
+        )
+
+    def teach_and_save(self, filename: str):
+        """
+        便捷流程第一步：进入示教模式（自动开始录制）
+        之后人工拖动演示，最后调用 teach_and_save_finish() 收尾。
+
+        用法:
+            arm.teach_and_save("taskA")   # 进入示教
+            ... 人工拖动 ...               # 中间等待
+            arm.teach_and_save_finish()   # 停止+保存+退出
+        """
+        logger.info(f"开始示教流程 → 轨迹名: {filename}")
+        self.teach_mode(enable=True)
+
+    def teach_and_save_finish(self, filename: str = ""):
+        """结束示教流程：停止录制 → 保存 → 退出示教模式"""
+        self.teach_record(command="stop")
+        if filename:
+            result = self.teach_record(command="save", filename=filename)
+        else:
+            result = {}
+        self.teach_mode(enable=False)
+        return result
+
     # ---------- 安全操作 ----------
 
     def safe_pick_place_sequence(

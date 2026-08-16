@@ -59,7 +59,7 @@ docker run -d \
     --add-host=host.docker.internal:host-gateway \
     -e ALGO_PORT=5000 \
     -e ARM_BASE_URL=http://host.docker.internal:8087 \
-    -e HAND_BASE_URL=http://host.docker.internal:5001 \
+    -e HAND_BASE_URL=http://host.docker.internal:8088 \
     -e CAMERA_SERVER_URL=http://host.docker.internal:5002 \
     --restart unless-stopped \
     wangwang-final:latest

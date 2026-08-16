@@ -28,7 +28,7 @@ POST /api/task3/execute   → 完成几何体分拣
 
 ```
 竞赛操作软件 ──HTTP──> 算法服务(本仓库) ──HTTP──> 机械臂 FTArm B9 (:8087)
-                                    ├──HTTP──> 灵巧手 DexHand (:5001)
+                                    ├──HTTP──> 灵巧手 O10 桥接 (:8088)
                                     └──USB───> Gemini335 相机
 ```
 

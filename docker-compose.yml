@@ -15,7 +15,7 @@ services:
     environment:
       - ALGO_PORT=5000
       - ARM_BASE_URL=http://127.0.0.1:8087
-      - HAND_BASE_URL=http://127.0.0.1:5001
+      - HAND_BASE_URL=http://127.0.0.1:8088
     stdin_open: true
     tty: true
     restart: unless-stopped

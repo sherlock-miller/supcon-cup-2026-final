@@ -23,8 +23,8 @@ ARM_BASE_URL = os.getenv("ARM_BASE_URL", "http://127.0.0.1:8087")
 ARM_MODE = "right_arm"  # 右臂工作区
 
 # 灵巧手 HTTP API（运行在比赛工控机上）
-# 根据更新的 API 文档，使用傅利叶 DexHand HTTP 接口
-HAND_BASE_URL = os.getenv("HAND_BASE_URL", "http://127.0.0.1:5001")
+# 官方 O10 API 文档: 默认端口 8088（7.29 更新版决赛附件）
+HAND_BASE_URL = os.getenv("HAND_BASE_URL", "http://127.0.0.1:8088")
 
 # Gemini335 深度相机（奥比中光 SDK，需自行集成）
 CAMERA_SERIAL = os.getenv("CAMERA_SERIAL", "")
