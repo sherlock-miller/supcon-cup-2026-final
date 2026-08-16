@@ -39,10 +39,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ─── pip 依赖（默认清华源，CI 构建时 PIP_INDEX_URL 覆盖为官方 PyPI） ───
-# torch 必须只用 pytorch.org/whl/cpu 作为唯一源：
-# 若混用主源(含CUDA版torch)+extra-index，pip 会装 CUDA 版（多带几GB nvidia 依赖）
-RUN pip install --no-cache-dir torch \
+# torch 安装策略：
+#   pytorch.org/whl/cpu 只有 torch 本体，缺构建依赖(flit_core等)，
+#   不能作为唯一源。正确做法: torch 用 --no-deps 从 cpu 源装（防止
+#   主源拖入 CUDA 版），其依赖单独从主源装。
+RUN pip install --no-cache-dir torch==2.7.1 --no-deps \
     --index-url https://download.pytorch.org/whl/cpu
+
+RUN pip install --no-cache-dir \
+    --index-url ${PIP_INDEX_URL} \
+    filelock \
+    typing-extensions \
+    networkx \
+    jinja2 \
+    fsspec \
+    sympy \
+    opt-einsum \
+    optree \
+    setuptools \
+    triton
 
 RUN pip install --no-cache-dir \
     fastapi \
