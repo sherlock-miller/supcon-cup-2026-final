@@ -39,10 +39,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ─── pip 依赖（默认清华源，CI 构建时 PIP_INDEX_URL 覆盖为官方 PyPI） ───
-RUN pip install --no-cache-dir \
-    torch \
-    --index-url ${PIP_INDEX_URL} \
-    --extra-index-url https://download.pytorch.org/whl/cpu
+# torch 必须只用 pytorch.org/whl/cpu 作为唯一源：
+# 若混用主源(含CUDA版torch)+extra-index，pip 会装 CUDA 版（多带几GB nvidia 依赖）
+RUN pip install --no-cache-dir torch \
+    --index-url https://download.pytorch.org/whl/cpu
 
 RUN pip install --no-cache-dir \
     fastapi \
