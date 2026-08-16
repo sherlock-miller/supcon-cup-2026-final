@@ -13,8 +13,14 @@ FROM python:3.10-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-# 国内 HF 镜像（下载模型用）
-ENV HF_ENDPOINT=https://hf-mirror.com
+
+# ─── 下载源（默认国内镜像，CI 构建时用 --build-arg 覆盖为官方源） ───
+# 本地构建默认走国内源加速；GitHub Actions 运行在美国，
+# workflow 中传入 HF_ENDPOINT=https://huggingface.co PIP_INDEX_URL=https://pypi.org/simple
+ARG HF_ENDPOINT=https://hf-mirror.com
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV HF_ENDPOINT=${HF_ENDPOINT}
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
 ENV HF_HUB_DISABLE_XET=1
 
 # ─── 系统依赖 ───
@@ -32,11 +38,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# ─── pip 依赖（清华源） ───
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip install --no-cache-dir \
-    torch torchvision \
-    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+# ─── pip 依赖（默认清华源，CI 构建时 PIP_INDEX_URL 覆盖为官方 PyPI） ───
+RUN pip install --no-cache-dir \
+    torch \
+    --index-url ${PIP_INDEX_URL} \
     --extra-index-url https://download.pytorch.org/whl/cpu
 
 RUN pip install --no-cache-dir \
@@ -45,7 +50,6 @@ RUN pip install --no-cache-dir \
     pydantic \
     requests \
     transformers \
-    ultralytics \
     easyocr \
     opencv-python-headless \
     Pillow \

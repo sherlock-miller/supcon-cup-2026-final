@@ -49,12 +49,46 @@ cd final_algo_service
 
 # 本地 Mock 测试（无需硬件）
 pip install -r requirements.txt pytest
-python -m pytest tests/ -q        # 47 passed
+python -m pytest tests/ -q        # 56 passed
 
-# 现场部署（二选一）
+# 现场部署（三选一，推荐①镜像分发）
 bash build_image.sh && bash run_on_site.sh    # Docker 镜像（U盘携带）
 bash download_wheels.sh                        # wheels 离线包（Win11 工控机推荐）
+docker pull ghcr.io/sherlock-miller/supcon-cup-2026-final:latest   # 见下方「镜像分发」章节
 ```
+
+## 镜像分发（CI 自动构建，推荐）
+
+CI（GitHub Actions）在每次 push 到 `main` 时自动构建并发布 Docker 镜像到 GHCR。
+**镜像内已包含全部模型权重（CLIP + GroundingDINO + EasyOCR）**，队友拉取后即可运行，
+无需本地构建（不用装 torch/下载模型，也不用关心构建环境）：
+
+```bash
+# 1. 拉取镜像（约 3GB，含模型，首次下载耗时取决于网速）
+docker pull ghcr.io/sherlock-miller/supcon-cup-2026-final:latest
+# 需要指定版本时用 commit 短号（每次构建对应一个短号标签，GitHub 镜像包页面可查）
+docker pull ghcr.io/sherlock-miller/supcon-cup-2026-final:<commit短号>
+
+# 2. 打成本地脚本认识的标签（run_on_site.sh / docker-compose.yml 引用 wangwang-final:latest）
+docker tag ghcr.io/sherlock-miller/supcon-cup-2026-final:latest wangwang-final:latest
+
+# 3. 启动（与现场部署流程一致）
+cd final_algo_service
+bash run_on_site.sh
+```
+
+> **维护者注意（一次性操作）**：GHCR 镜像默认私有。首次构建成功后，仓库管理员需到
+> GitHub 仓库页 → Packages → 选择 `supcon-cup-2026-final` 镜像 → Package settings →
+> Danger Zone → Change visibility → 改为 **Public**，否则队友拉取会报 401 denied。
+
+> **国内拉取加速**：ghcr.io 直连较慢时，可配置 Docker 镜像加速器
+> （Linux 编辑 `/etc/docker/daemon.json` 后 `sudo systemctl restart docker`；
+> Windows Docker Desktop 在 Settings → Docker Engine 中修改）：
+> `{"registry-mirrors": ["https://docker.m.daocloud.io"]}`
+> 注意加速器仅对 Docker Hub 生效，ghcr.io 一般走直连（现场有有线网口，通常可达）。
+
+> **离线兜底**：无法联网的环境仍走 U 盘方案 —— 有网电脑 `bash build_image.sh` 构建并导出
+> `汪汪队决赛镜像.tar`，现场 `docker load` 后 `bash run_on_site.sh`。
 
 ## 关键情报（详见 资料整理/00-关键情报汇总.md）
 

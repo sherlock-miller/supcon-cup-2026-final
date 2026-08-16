@@ -1,0 +1,78 @@
+# 中控杯决赛 — 汪汪队算法服务镜像 CI 构建流水线
+# ==========================================
+# 触发: push 到 main 分支 / 手动 workflow_dispatch
+# 产物: ghcr.io/sherlock-miller/supcon-cup-2026-final:latest + :<commit 短号>
+#
+# 说明:
+#   - 本机无 Docker，构建在 GitHub Actions 上完成，队友通过 GHCR 拉取运行
+#   - 构建含模型预下载（CLIP ~600MB + GroundingDINO ~700MB + EasyOCR ~100MB），
+#     首次构建约 20-30 分钟，因此 timeout 设为 120 分钟
+#   - CI 运行环境在美国，通过 build-args 把 Dockerfile 默认的国内镜像源
+#     覆盖为官方源（huggingface.co / pypi.org）
+#   - 层缓存使用 GitHub Actions Cache（type=gha），后续构建可复用模型下载层，
+#     代码改动后重建仅需数分钟
+
+name: 构建并发布 Docker 镜像
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# GITHUB_TOKEN 需要 packages: write 权限才能推送 GHCR
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # 镜像名: ghcr.io/<owner>/<repo>
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120   # 模型下载 + pip 安装耗时，留足余量
+
+    steps:
+      # 1. 检出代码
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 2. 设置 Buildx（启用 GHA 缓存驱动）
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 3. 登录 GHCR
+      - name: 登录 GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 4. 生成标签: commit sha 短号
+      - name: 生成镜像标签
+        id: meta
+        run: |
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # 5. 构建并推送
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          # Dockerfile 内 COPY 均为相对路径（app.py / vision/ 等），
+          # 构建上下文必须指向 final_algo_service/，file 相对 context
+          context: ./final_algo_service
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.short_sha }}
+          # CI 在美国运行，覆盖 Dockerfile 默认的国内镜像源
+          build-args: |
+            HF_ENDPOINT=https://huggingface.co
+            PIP_INDEX_URL=https://pypi.org/simple
+          # 层缓存: 模型下载层复用，后续构建大幅加速
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
