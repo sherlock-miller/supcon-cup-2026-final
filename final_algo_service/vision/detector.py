@@ -257,11 +257,16 @@ class GroundingDinoDetector:
 # 亮灯特征：饱和度高 + 亮度高。V 阈值是与"灭灯"区分的核心：
 # 亮灯 V 接近 255，灭灯明显更暗（测试图灭灯 V≤220，亮灯 V=255）。
 # 红色 HSV 环绕 0°，需要两个区间。
+# ⚠️ 2026-08-17 官方《竞赛操作软件说明书》: 三灯为 红/白/绿（不是红黄绿！）
+# 白色灯特征相反: 低饱和度 + 高亮度，单独参数处理（见下方检测循环）。
 _LIGHT_HSV_RANGES: Dict[str, List[Tuple[int, int, int, int]]] = {
     "red":    [(0, 12, 100, 220), (168, 179, 100, 220)],
-    "yellow": [(18, 38, 100, 220)],
     "green":  [(40, 90, 90, 220)],
 }
+
+# 白色灯 HSV 判定（低饱和 + 高亮，与彩色灯高饱和逻辑相反）
+_LIGHT_WHITE_S_MAX = 45
+_LIGHT_WHITE_V_MIN = 220
 
 # 候选区域占整图面积比的范围（过滤噪声点/整块面板）
 _LIGHT_MIN_AREA_RATIO = 0.0005
@@ -368,13 +373,19 @@ def hsv_lit_light_detect(
     hsv_h, hsv_s, hsv_v = _get_hsv(arr)
 
     candidates: List[Dict[str, Any]] = []
-    for color, ranges in _LIGHT_HSV_RANGES.items():
+    # 白色灯特殊分支: 低饱和(S≤45) + 高亮(V≥220)，与彩色灯(高饱和)逻辑相反
+    all_ranges = dict(_LIGHT_HSV_RANGES)
+    all_ranges["white"] = [None]  # 占位，下面单独构建 mask
+    for color, ranges in all_ranges.items():
         mask = np.zeros((h, w), dtype=bool)
-        for (h_lo, h_hi, s_lo, v_lo) in ranges:
-            mask |= (
-                (hsv_h >= h_lo) & (hsv_h <= h_hi)
-                & (hsv_s >= s_lo) & (hsv_v >= v_lo)
-            )
+        if color == "white":
+            mask = (hsv_s <= _LIGHT_WHITE_S_MAX) & (hsv_v >= _LIGHT_WHITE_V_MIN)
+        else:
+            for (h_lo, h_hi, s_lo, v_lo) in ranges:
+                mask |= (
+                    (hsv_h >= h_lo) & (hsv_h <= h_hi)
+                    & (hsv_s >= s_lo) & (hsv_v >= v_lo)
+                )
 
         if mask.sum() < min_area:
             continue

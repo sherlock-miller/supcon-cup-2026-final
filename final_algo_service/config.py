@@ -58,6 +58,8 @@ ARM_HOME_JOINTS = [0.0, 0.5, 0.0, -1.0, -0.1, -1.0, 0.0]
 
 # 任务1：开关面板
 # 情报（截图10）: 面板上方红黄绿3个灯，下方依次红按钮、拨杆(上下双向)、绿按钮，最右侧黑色长条
+# ⚠️ 2026-08-17 官方《竞赛操作软件说明书》更正: 三灯为 红/白/绿（非红黄绿）
+#    "在红、白、绿灯中随机选择未使用灯色并点亮"
 # 电气柜上的开关面板位置（相机坐标系 → 需现场标定转换到机械臂基坐标系）
 SWITCH_PANEL = {
     "photo_position": {     # 拍照位置（相机正对面板）
@@ -66,7 +68,7 @@ SWITCH_PANEL = {
     },
     "lights": {             # 三个灯的像素区域（用 Gemini335 采集后标定）
         "light_1": {"pixel_x": 320, "pixel_y": 200, "label": "按钮1", "color": "red"},
-        "light_2": {"pixel_x": 320, "pixel_y": 300, "label": "拨动开关", "color": "yellow"},
+        "light_2": {"pixel_x": 320, "pixel_y": 300, "label": "拨动开关", "color": "white"},
         "light_3": {"pixel_x": 320, "pixel_y": 400, "label": "按钮2", "color": "green"},
     },
     "switch_type": {         # 开关类型（情报：拨杆上下双向可拨）

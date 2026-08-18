@@ -125,10 +125,11 @@ class VisionManager:
         bbox: Optional[List[float]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        区域内红/黄/绿主导色分析（HSV）。
+        区域内红/白/绿主导色分析（HSV）。
 
-        返回 {"color": "red"/"yellow"/"green", "mean_v": float, "ratio": float}
+        返回 {"color": "red"/"white"/"green", "mean_v": float, "ratio": float}
         或 None（无显著颜色）。用于 DINO 候选框的颜色验证。
+        白色灯特征相反：低饱和 + 高亮（官方说明书 2026-08-17: 红白绿）。
         """
         from vision.detector import _get_hsv
         if bbox is not None:
@@ -148,10 +149,14 @@ class VisionManager:
 
         ranges = {
             "red":    [((0, 12), (168, 179))],
-            "yellow": [((18, 38),)],
             "green":  [((40, 90),)],
         }
         best_color, best_ratio = None, 0.0
+        # 白色灯分支: 低饱和(S<45) + 高亮(V>150)——与彩色灯高饱和逻辑相反
+        white_mask = (hsv_s < 45) & (hsv_v > 150)
+        white_ratio = float(white_mask.sum()) / total
+        if white_ratio >= 0.05:
+            best_color, best_ratio = "white", white_ratio
         for color, hranges in ranges.items():
             mask = np.zeros_like(hsv_h, dtype=bool)
             for hr in hranges:
