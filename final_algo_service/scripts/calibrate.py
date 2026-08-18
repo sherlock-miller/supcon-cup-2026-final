@@ -42,6 +42,12 @@ SQUARE_SIZE_MM = 25.0     # 棋盘格边长 mm — 需实测
 CAMERA_IMAGES = 20        # 内参标定照片数
 HANDEYE_POSES = 12        # 手眼标定位姿数
 
+# ChArUco 标定板参数（与 scripts/gen_markers.py 生成的第1页一致）
+CHARUCO_SQUARES = (5, 7)      # 方格数 (宽, 高)
+CHARUCO_SQUARE_MM = 30.0      # 方格边长 mm
+CHARUCO_MARKER_MM = 22.0      # 内嵌 ArUco 标记边长 mm
+CHARUCO_DICT_NAME = "DICT_6X6_250"  # cv2.aruco 字典名（函数内解析，避免模块级依赖 cv2）
+
 
 def get_camera():
     """获取相机"""
@@ -75,54 +81,107 @@ def detect_chessboard(image) -> Optional[np.ndarray]:
     return None
 
 
-def calibrate_camera(cam, num_images: int = CAMERA_IMAGES) -> Tuple[np.ndarray, np.ndarray]:
+def get_charuco_board():
+    """构建 ChArUco 标定板对象（与 gen_markers.py 第1页一致）"""
+    import cv2
+    dictionary = cv2.aruco.getPredefinedDictionary(
+        getattr(cv2.aruco, CHARUCO_DICT_NAME))
+    return cv2.aruco.CharucoBoard(
+        CHARUCO_SQUARES, CHARUCO_SQUARE_MM, CHARUCO_MARKER_MM, dictionary)
+
+
+def detect_charuco(image):
+    """检测 ChArUco 角点 + 标记角点。返回 (charuco_corners, charuco_ids)
+    或 (None, None)。抗遮挡，板可部分可见。"""
+    import cv2
+    board = get_charuco_board()
+    gray = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2GRAY)
+    detector = cv2.aruco.CharucoDetector(board)
+    charuco_corners, charuco_ids, _, _ = detector.detectBoard(gray)
+    if charuco_ids is None or len(charuco_ids) < 6:
+        return None, None
+    return charuco_corners, charuco_ids
+
+
+def calibrate_camera(cam, num_images: int = CAMERA_IMAGES,
+                     pattern: str = "chessboard") -> Tuple[np.ndarray, np.ndarray]:
     """
     阶段A: 相机内参标定
-    引导用户在不同位置/角度拍摄棋盘格
+    引导用户在不同位置/角度拍摄标定板
+    pattern: "chessboard"（棋盘格）或 "charuco"（ChArUco，推荐，抗遮挡）
     """
     import cv2
 
     logger.info("=" * 60)
-    logger.info("阶段A: 相机内参标定")
+    logger.info(f"阶段A: 相机内参标定 (pattern={pattern})")
     logger.info("=" * 60)
-    logger.info(f"需要拍摄 {num_images} 张棋盘格照片")
+    logger.info(f"需要拍摄 {num_images} 张标定板照片")
     logger.info("要求:")
-    logger.info("  1. 棋盘格完整出现在画面中")
+    if pattern == "charuco":
+        logger.info("  1. ChArUco 板至少 6 个标记可见（可部分遮挡，可拍局部）")
+    else:
+        logger.info("  1. 棋盘格完整出现在画面中")
     logger.info("  2. 每次改变角度和距离（覆盖画面不同区域）")
-    logger.info("  3. 保持棋盘格静止时拍摄")
+    logger.info("  3. 保持标定板静止时拍摄")
     logger.info("")
 
-    objp = np.zeros((CHESSBOARD[0] * CHESSBOARD[1], 3), np.float32)
-    objp[:, :2] = np.mgrid[0:CHESSBOARD[0], 0:CHESSBOARD[1]].T.reshape(-1, 2) * SQUARE_SIZE_MM
-
-    objpoints = []
-    imgpoints = []
+    if pattern == "charuco":
+        board = get_charuco_board()
+        charuco_corners_list = []
+        charuco_ids_list = []
+        img_size = None
+    else:
+        objp = np.zeros((CHESSBOARD[0] * CHESSBOARD[1], 3), np.float32)
+        objp[:, :2] = np.mgrid[0:CHESSBOARD[0], 0:CHESSBOARD[1]].T.reshape(-1, 2) * SQUARE_SIZE_MM
+        objpoints = []
+        imgpoints = []
 
     save_dir = CALIB_DIR / "标定照片"
     save_dir.mkdir(exist_ok=True)
 
-    while len(objpoints) < num_images:
-        input(f"按 Enter 拍摄第 {len(objpoints)+1}/{num_images} 张（q 提前结束）: ")
-        image = cam.capture()
-        corners = detect_chessboard(image)
+    if pattern == "charuco":
+        while len(charuco_corners_list) < num_images:
+            input(f"按 Enter 拍摄第 {len(charuco_corners_list)+1}/{num_images} 张（q 提前结束）: ")
+            image = cam.capture()
+            gray = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2GRAY)
+            corners, ids = detect_charuco(image)
+            if corners is not None:
+                charuco_corners_list.append(corners)
+                charuco_ids_list.append(ids)
+                img_size = gray.shape[::-1]
+                image.save(save_dir / f"charuco_{len(charuco_corners_list):02d}.png")
+                logger.info(f"  ✅ 第 {len(charuco_corners_list)} 张成功（{len(ids)} 个角点）")
+            else:
+                logger.warning("  ❌ 未检测到足够 ChArUco 角点，重试（调整角度/距离/光照）")
+        if len(charuco_corners_list) < 8:
+            raise RuntimeError(f"有效照片不足（{len(charuco_corners_list)} < 8），无法标定")
+        logger.info("计算内参（ChArUco）...")
+        ret, mtx, dist, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(
+            charuco_corners_list, charuco_ids_list, board,
+            img_size, None, None)
+    else:
+        while len(objpoints) < num_images:
+            input(f"按 Enter 拍摄第 {len(objpoints)+1}/{num_images} 张（q 提前结束）: ")
+            image = cam.capture()
+            corners = detect_chessboard(image)
 
-        if corners is not None:
-            objpoints.append(objp)
-            imgpoints.append(corners)
-            image.save(save_dir / f"calib_{len(objpoints):02d}.png")
-            logger.info(f"  ✅ 第 {len(objpoints)} 张成功（角点检测通过）")
-        else:
-            logger.warning("  ❌ 未检测到棋盘格，重试（调整角度/距离/光照）")
+            if corners is not None:
+                objpoints.append(objp)
+                imgpoints.append(corners)
+                image.save(save_dir / f"calib_{len(objpoints):02d}.png")
+                logger.info(f"  ✅ 第 {len(objpoints)} 张成功（角点检测通过）")
+            else:
+                logger.warning("  ❌ 未检测到棋盘格，重试（调整角度/距离/光照）")
 
-    if len(objpoints) < 10:
-        raise RuntimeError(f"有效照片不足（{len(objpoints)} < 10），无法标定")
+        if len(objpoints) < 10:
+            raise RuntimeError(f"有效照片不足（{len(objpoints)} < 10），无法标定")
 
-    logger.info("计算内参...")
-    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-        objpoints, imgpoints,
-        (640, 480),  # 需与相机分辨率一致
-        None, None,
-    )
+        logger.info("计算内参...")
+        ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
+            objpoints, imgpoints,
+            (640, 480),  # 需与相机分辨率一致
+            None, None,
+        )
     logger.info(f"重投影误差: {ret:.3f} px (建议 < 0.5)")
     logger.info(f"内参矩阵:\n{mtx}")
     logger.info(f"畸变系数: {dist.ravel()}")
@@ -307,6 +366,10 @@ def main():
     parser = argparse.ArgumentParser(description="手眼标定半自动化脚本")
     parser.add_argument("--mode", choices=["camera", "handeye", "all"], default="all",
                         help="标定模式 (默认 all)")
+    parser.add_argument("--pattern", choices=["chessboard", "charuco"],
+                        default="chessboard",
+                        help="标定板类型 (默认 chessboard；charuco 抗遮挡，推荐)"
+                             "——charuco 板由 scripts/gen_markers.py 生成")
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -318,7 +381,7 @@ def main():
 
     mtx = dist = None
     if args.mode in ("camera", "all"):
-        mtx, dist = calibrate_camera(cam)
+        mtx, dist = calibrate_camera(cam, pattern=args.pattern)
 
     if args.mode in ("handeye", "all"):
         if mtx is None:
