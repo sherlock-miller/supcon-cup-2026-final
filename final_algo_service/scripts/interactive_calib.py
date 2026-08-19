@@ -558,7 +558,7 @@ def generate_config():
             "fx": float(mtx[0, 0]), "fy": float(mtx[1, 1]),
             "cx": float(mtx[0, 2]), "cy": float(mtx[1, 2]),
             "dist_coeffs": dist.tolist(),
-            "image_size": list(d["image_size"]),
+            "image_size": [int(x) for x in d["image_size"]],
         }
     if he_file.exists():
         d = np.load(he_file)
