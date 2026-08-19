@@ -153,27 +153,44 @@ class PreviewWindow:
                                     cv2.COLOR_RGB2GRAY)
                 detector = cv2.aruco.CharucoDetector(board)
                 corners, ids, m_corners, m_ids = detector.detectBoard(gray)
+                # OpenCV 5.0 要求 corners/ids 数量一致（检测偶发不一致 → 裁剪对齐）
+                if (corners is not None and ids is not None
+                        and len(corners) != len(ids)):
+                    n = min(len(corners), len(ids))
+                    corners, ids = corners[:n], ids[:n]
                 ok = corners is not None and ids is not None and len(ids) >= 6
 
                 self.latest = {"image": image, "corners": corners, "ids": ids,
                                "marker_corners": m_corners, "marker_ids": m_ids}
 
-                # 绘制（BGR）
+                # 绘制（BGR）——自定义绘制，绕开 OpenCV 5.0 draw 函数的形状断言
                 disp = np.array(image.convert("RGB"))[..., ::-1].copy()
-                if ok:
-                    if m_corners is not None:
-                        cv2.aruco.drawDetectedMarkers(disp, m_corners, m_ids)
-                    cv2.aruco.drawDetectedCornersCharuco(disp, corners, ids)
-                    cv2.putText(disp, f"OK {len(ids)} pts - SPACE=采集",
-                                (15, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
-                                (0, 255, 0), 3)
-                else:
-                    cv2.putText(disp, f"detecting... ({0 if ids is None else len(ids)} pts)",
-                                (15, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
-                                (0, 0, 255), 3)
-                    cv2.putText(disp, "调整标定板位置/角度/光照",
-                                (15, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                                (0, 0, 255), 2)
+                try:
+                    if ok:
+                        # 角点（5.0 返回 (N,2) 或 (N,1,2)，统一 flatten 后画圆）
+                        pts = np.asarray(corners).reshape(-1, 2).astype(int)
+                        for (x, y) in pts:
+                            cv2.circle(disp, (x, y), 4, (0, 255, 0), -1)
+                        # 标记框
+                        if m_corners is not None:
+                            for mc in m_corners:
+                                mm = np.asarray(mc).reshape(-1, 2).astype(int)
+                                if len(mm) >= 3:
+                                    cv2.polylines(disp, [mm], True,
+                                                  (255, 0, 255), 2)
+                        cv2.putText(disp, f"OK {len(ids)} pts - SPACE=采集",
+                                    (15, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
+                                    (0, 255, 0), 3)
+                    else:
+                        cv2.putText(disp, f"detecting... ({0 if ids is None else len(ids)} pts)",
+                                    (15, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
+                                    (0, 0, 255), 3)
+                        cv2.putText(disp, "调整标定板位置/角度/光照",
+                                    (15, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                                    (0, 0, 255), 2)
+                except cv2.error:
+                    cv2.putText(disp, "draw err", (15, 45),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                 cv2.imshow(win_name, disp)
 
                 key = cv2.waitKey(30) & 0xFF
@@ -201,6 +218,25 @@ def get_charuco_board():
         getattr(cv2.aruco, CHARUCO_DICT_NAME))
     return cv2.aruco.CharucoBoard(
         CHARUCO_SQUARES, CHARUCO_SQUARE_MM, CHARUCO_MARKER_MM, dictionary)
+
+
+def _calibrate_charuco_compat(corners_list, ids_list, board, img_size):
+    """OpenCV 4/5 双版本 Charuco 内参标定兼容层。
+
+    - OpenCV 4.x: cv2.aruco.calibrateCameraCharuco 存在
+    - OpenCV 5.x: 该函数被移除，用 board.matchImagePoints 转棋盘格式
+      + cv2.calibrateCamera 标准标定
+    """
+    import cv2
+    if hasattr(cv2.aruco, "calibrateCameraCharuco"):
+        return cv2.aruco.calibrateCameraCharuco(
+            corners_list, ids_list, board, img_size, None, None)
+    obj_points, img_points = [], []
+    for corners, ids in zip(corners_list, ids_list):
+        op, ip = board.matchImagePoints(corners, ids)
+        obj_points.append(op)
+        img_points.append(ip)
+    return cv2.calibrateCamera(obj_points, img_points, img_size, None, None)
 
 
 def gray_size(image: Image.Image):
@@ -292,8 +328,8 @@ def calibrate_camera(cam: Gemini335) -> Tuple[np.ndarray, np.ndarray]:
         raise RuntimeError(f"有效照片不足 {len(corners_list)} < 8")
 
     logger.info("解算内参...")
-    ret, mtx, dist, _, _ = cv2.aruco.calibrateCameraCharuco(
-        corners_list, ids_list, board, img_size, None, None)
+    ret, mtx, dist, _, _ = _calibrate_charuco_compat(
+        corners_list, ids_list, board, img_size)
     logger.info(f"重投影误差: {ret:.4f} px（建议 <0.5）")
     logger.info(f"内参:\n{mtx}")
     np.savez(CALIB_DIR / "camera_intrinsics.npz", mtx=mtx, dist=dist,
@@ -337,11 +373,13 @@ def calibrate_handeye(cam: Gemini335, mtx: np.ndarray, dist: np.ndarray,
                 continue
 
             # 2. 解标定板在相机系的位姿
+            # ⚠️ 必须用 board.matchImagePoints 把 charuco 角点映射到棋盘对象点
+            # （charuco ID ≠ 棋盘角点索引，直接索引 getChessboardCorners 会错位
+            #   —— 审核发现的严重 bug: PnP 仍收敛但矩阵全错）
             board = get_charuco_board()
-            obj_pts = np.asarray(
-                [board.getChessboardCorners()[int(i)] for i in ids.flatten()],
-                dtype=np.float32).reshape(-1, 1, 3)
-            img_pts = np.asarray(corners, dtype=np.float32).reshape(-1, 1, 2)
+            obj_pts, img_pts = board.matchImagePoints(corners, ids)
+            obj_pts = np.asarray(obj_pts, dtype=np.float32).reshape(-1, 1, 3)
+            img_pts = np.asarray(img_pts, dtype=np.float32).reshape(-1, 1, 2)
             ok, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, mtx, dist,
                                           flags=cv2.SOLVEPNP_ITERATIVE)
             if not ok:

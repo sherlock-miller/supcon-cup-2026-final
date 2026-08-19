@@ -141,9 +141,10 @@ def execute_shape_task(arm, hand, vision) -> Tuple[bool, str]:
 
             except Exception as e:
                 logger.error(f"处理 {shape} 失败: {e}")
+                # ⚠️ 先回安全高度再释放（防物体高空掉落——审核修复）
                 try:
-                    hand.release()
                     arm.move_to_safe_height()
+                    hand.release()
                 except Exception:
                     pass
 
@@ -159,9 +160,10 @@ def execute_shape_task(arm, hand, vision) -> Tuple[bool, str]:
 
     except Exception as e:
         logger.error(f"任务3异常: {e}", exc_info=True)
+        # 先回安全高度再释放（防物体掉落——审核修复）
         try:
-            hand.release()
             arm.move_to_safe_height()
+            hand.release()
         except Exception:
             pass
         return False, f"任务3异常: {type(e).__name__}: {str(e)[:200]}"

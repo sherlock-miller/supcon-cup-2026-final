@@ -1,0 +1,17 @@
+
+# 运行时日志与现场数据
+Log/
+final_algo_service/Log/
+*.log
+现场配置/标定照片/
+现场配置/手眼标定照片/
+*.exe
+python-3.12.10-amd64.exe
+
+# 部署物料（不上传仓库）
+*.zip
+*.whl
+wheels/
+model_cache*/
+model_cache*.zip
+wheels/

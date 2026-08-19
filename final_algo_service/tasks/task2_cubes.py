@@ -166,9 +166,11 @@ def execute_cube_task(arm, hand, vision) -> Tuple[bool, str]:
             except Exception as e:
                 logger.error(f"处理长方体 {num} 失败: {e}")
                 # 继续处理下一个
+                # ⚠️ 顺序: 先回安全高度再释放（若正抓着物体，先松手物体会
+                # 掉落在当前位置砸坏其他方块——审核修复）
                 try:
-                    hand.release()
                     arm.move_to_safe_height()
+                    hand.release()
                 except Exception:
                     pass
 

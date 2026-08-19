@@ -150,12 +150,11 @@ def solve_target_pose(image, mtx: np.ndarray, dist: np.ndarray, pattern: str):
             return None, None, 0
 
         board = get_charuco_board()
-        board_points = board.getChessboardCorners()
-        object_points = np.asarray(
-            [board_points[int(i)] for i in ids.flatten()],
-            dtype=np.float32,
-        ).reshape(-1, 1, 3)
-        image_points = np.asarray(corners, dtype=np.float32).reshape(-1, 1, 2)
+        # ⚠️ charuco ID ≠ 棋盘角点索引，必须用 matchImagePoints 正确映射
+        # （直接索引 getChessboardCorners 会错位——审核发现的严重 bug）
+        board_points, image_points = board.matchImagePoints(corners, ids)
+        object_points = np.asarray(board_points, dtype=np.float32).reshape(-1, 1, 3)
+        image_points = np.asarray(image_points, dtype=np.float32).reshape(-1, 1, 2)
 
         if len(object_points) < 6:
             return None, None, len(object_points)

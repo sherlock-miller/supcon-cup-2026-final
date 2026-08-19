@@ -157,8 +157,9 @@ class VisionManager:
             "green":  [((40, 90),)],
         }
         best_color, best_ratio = None, 0.0
-        # 白色灯分支: 低饱和(S<45) + 高亮(V>150)——与彩色灯高饱和逻辑相反
-        white_mask = (hsv_s < 45) & (hsv_v > 150)
+        # 白色灯分支: 低饱和(S<45) + 高亮(V>200)——与彩色灯高饱和逻辑相反
+        # （V 阈值与 DINO 兜底的 200 对齐，防白墙/反光误检——审核修复）
+        white_mask = (hsv_s < 45) & (hsv_v > 200)
         white_ratio = float(white_mask.sum()) / total
         if white_ratio >= 0.05:
             best_color, best_ratio = "white", white_ratio

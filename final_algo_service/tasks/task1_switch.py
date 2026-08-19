@@ -143,9 +143,10 @@ def _press_button(arm, hand, x: float, y: float, z: float) -> Tuple[bool, str]:
         logger.info(f"接近按钮: ({x:.3f}, {y:.3f}, {approach_z:.3f})")
         arm.move_linear(x=x, y=y, z=approach_z, speed=0.08)
 
-        # 推进按下
-        logger.info(f"按下按钮: ({x:.3f}, {y:.3f}, {z:.3f})")
-        arm.move_linear(x=x, y=y, z=z - 0.01, speed=0.05)  # 略深一点
+        # 推进按下（钳制工作域下限，防撞台——审核修复）
+        press_z = max(ARM_WORKSPACE_Z[0], z - 0.01)
+        logger.info(f"按下按钮: ({x:.3f}, {y:.3f}, {press_z:.3f})")
+        arm.move_linear(x=x, y=y, z=press_z, speed=0.05)  # 略深一点
 
         # 稍等
         time.sleep(0.3)
@@ -188,9 +189,10 @@ def _flip_toggle(arm, hand, x: float, y: float, z: float) -> Tuple[bool, str]:
         hand.grasp(strength=0.5)
         time.sleep(0.2)
 
-        # 向下拨动
+        # 向下拨动（钳制工作域下限——审核修复）
+        flip_z = max(ARM_WORKSPACE_Z[0], z - 0.03)
         logger.info("向下拨动开关...")
-        arm.move_linear(x=x, y=y, z=z - 0.03, speed=0.05)
+        arm.move_linear(x=x, y=y, z=flip_z, speed=0.05)
 
         # 释放
         hand.release()

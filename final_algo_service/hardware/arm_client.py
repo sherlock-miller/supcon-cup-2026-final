@@ -155,12 +155,12 @@ class ArmClient:
         if yaw is None:
             yaw = self.default_pose["yaw"]
 
-        # 安全工作域检查
+        # 安全工作域检查（硬拦截——审核修复: 越界指令直接拒绝，防撞台）
         if check_workspace:
             if not (ARM_WORKSPACE_Y[0] <= y <= ARM_WORKSPACE_Y[1]):
-                logger.warning(f"Y={y} 超出安全工作域 {ARM_WORKSPACE_Y}")
+                raise ArmError(f"Y={y} 超出安全工作域 {ARM_WORKSPACE_Y}")
             if not (ARM_WORKSPACE_Z[0] <= z <= ARM_WORKSPACE_Z[1]):
-                logger.warning(f"Z={z} 超出安全工作域 {ARM_WORKSPACE_Z}")
+                raise ArmError(f"Z={z} 超出安全工作域 {ARM_WORKSPACE_Z}")
 
         right_target = {
             "x": x, "y": y, "z": z,
