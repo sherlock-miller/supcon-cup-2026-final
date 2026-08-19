@@ -16,6 +16,8 @@ import logging
 from typing import Tuple
 import time
 
+import numpy as np
+
 from config import SHAPE_SLOTS, SHAPE_LABELS
 
 logger = logging.getLogger(__name__)
@@ -56,7 +58,7 @@ def execute_shape_task(arm, hand, vision) -> Tuple[bool, str]:
 
         # 步骤 4: 拍照 + 形状识别
         logger.info("拍照...")
-        image = vision.capture_image()
+        image, depth_map = vision.capture_with_depth()
 
         logger.info("识别几何体形状...")
         shapes = vision.detect_and_classify_shapes(image)
@@ -81,20 +83,18 @@ def execute_shape_task(arm, hand, vision) -> Tuple[bool, str]:
 
             target_slot = place_slots[shape]
 
-            # 抓取位置（基于像素坐标估算 + 占位深度）
-            # TODO: 现场需用深度相机获取实际 Z
-            cx = shape_info.get("cx", 320)
-            cy = shape_info.get("cy", 240)
+            pick_point = _estimate_pick_point(
+                shape_info=shape_info,
+                depth_map=depth_map,
+                vision=vision,
+                arm=arm,
+            )
+            if pick_point is None:
+                logger.warning(f"形状 '{shape}' 无有效深度/坐标，跳过")
+                continue
 
-            # 占位坐标转换
-            pick_x = pick_area["x_range"][0] + (cx / 640) * (
-                pick_area["x_range"][1] - pick_area["x_range"][0]
-            )
-            pick_y = pick_area["y_range"][0] + (cy / 480) * (
-                pick_area["y_range"][1] - pick_area["y_range"][0]
-            )
-            pick_z = pick_area["z_pick"]
-            approach_z = pick_area["z_approach"]
+            pick_x, pick_y, pick_z = pick_point
+            approach_z = min(0.52, max(pick_area["z_approach"], pick_z + 0.05))
 
             # 放置坐标
             place_x = target_slot["x"]
@@ -165,3 +165,51 @@ def execute_shape_task(arm, hand, vision) -> Tuple[bool, str]:
         except Exception:
             pass
         return False, f"任务3异常: {type(e).__name__}: {str(e)[:200]}"
+
+
+def _estimate_pick_point(shape_info, depth_map, vision, arm):
+    """从检测框区域提取稳健深度，并转换到机械臂基座坐标。"""
+    from config import ARM_WORKSPACE_Y, ARM_WORKSPACE_Z
+
+    if depth_map is None or getattr(depth_map, "size", 0) == 0:
+        return None
+
+    img_h, img_w = depth_map.shape[:2]
+    cx = int(round(float(shape_info.get("cx", img_w / 2))))
+    cy = int(round(float(shape_info.get("cy", img_h / 2))))
+
+    bbox = shape_info.get("bbox")
+    if bbox:
+        x1, y1, x2, y2 = [int(round(v)) for v in bbox]
+        x1 = max(0, min(img_w - 1, x1))
+        y1 = max(0, min(img_h - 1, y1))
+        x2 = max(x1 + 1, min(img_w, x2))
+        y2 = max(y1 + 1, min(img_h, y2))
+    else:
+        half = 12
+        x1 = max(0, cx - half)
+        y1 = max(0, cy - half)
+        x2 = min(img_w, cx + half + 1)
+        y2 = min(img_h, cy + half + 1)
+
+    roi = depth_map[y1:y2, x1:x2]
+    valid_depths = roi[(roi > 0) & (roi <= 5000)]
+    if valid_depths.size == 0:
+        half = 6
+        px1 = max(0, cx - half)
+        py1 = max(0, cy - half)
+        px2 = min(img_w, cx + half + 1)
+        py2 = min(img_h, cy + half + 1)
+        patch = depth_map[py1:py2, px1:px2]
+        valid_depths = patch[(patch > 0) & (patch <= 5000)]
+        if valid_depths.size == 0:
+            return None
+
+    depth_val = float(np.median(valid_depths))
+    arm_pose = arm.get_pose().get("pose")
+    target_x, target_y, target_z = vision.pixel_to_arm_coord(
+        cx, cy, depth_val, arm_pose=arm_pose
+    )
+    target_y = max(ARM_WORKSPACE_Y[0], min(ARM_WORKSPACE_Y[1], target_y))
+    target_z = max(ARM_WORKSPACE_Z[0], min(ARM_WORKSPACE_Z[1], target_z))
+    return float(target_x), float(target_y), float(target_z)

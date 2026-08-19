@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 """
-手眼标定 + 相机内参标定 — 半自动化脚本
-======================================
-现场最耗时的工作，本脚本将其压缩到 15-20 分钟。
+手眼标定 + 相机内参标定工具
+==========================
+支持两种手眼采样方式：
+  1. manual: 人工拖动机械臂到合适姿态后采样（推荐，避免自动运动磕碰）
+  2. auto:   使用预设位姿自动运动采样（兼容旧流程）
 
 流程:
-  阶段A: 相机内参标定（棋盘格 20 张）
-  阶段B: 手眼标定（机械臂带相机移动 12 个位姿拍照）
+  阶段A: 相机内参标定
+  阶段B: 手眼标定（eye-in-hand）
   阶段C: 输出标定结果 → 生成标定配置文件
 
 用法:
-  python calibrate.py --mode camera    # 仅内参
-  python calibrate.py --mode handeye   # 仅手眼
-  python calibrate.py --mode all       # 全流程（推荐）
+  python calibrate.py --mode handeye --pattern charuco
+  python calibrate.py --mode handeye --pattern charuco --collection-mode manual
+  python calibrate.py --mode camera --pattern charuco
 
 相机类型: Gemini335 (Orbbec) — 装在机械臂末端（eye-in-hand）
-棋盘格: 需打印 9x7 或 8x6 棋盘格，格宽需实测（mm）
+ChArUco 板: 使用 scripts/标定标记/标定标记全集.pdf 第1页
 """
 import argparse
 import json
 import logging
-import os
 import sys
-import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -47,6 +47,7 @@ CHARUCO_SQUARES = (5, 7)      # 方格数 (宽, 高)
 CHARUCO_SQUARE_MM = 30.0      # 方格边长 mm
 CHARUCO_MARKER_MM = 22.0      # 内嵌 ArUco 标记边长 mm
 CHARUCO_DICT_NAME = "DICT_6X6_250"  # cv2.aruco 字典名（函数内解析，避免模块级依赖 cv2）
+MIN_VALID_HANDEYE_SAMPLES = 6
 
 
 def get_camera():
@@ -66,6 +67,16 @@ def get_arm():
     if not arm.check_connection():
         logger.warning("机械臂连接失败，手眼标定将无法进行")
     return arm
+
+
+def load_camera_intrinsics() -> Tuple[np.ndarray, np.ndarray]:
+    """加载已有相机内参。"""
+    intrinsics_file = CALIB_DIR / "camera_intrinsics.npz"
+    if not intrinsics_file.exists():
+        raise FileNotFoundError(f"缺少内参文件: {intrinsics_file}")
+    data = np.load(intrinsics_file)
+    logger.info(f"已加载现有内参: {intrinsics_file}")
+    return data["mtx"], data["dist"]
 
 
 def detect_chessboard(image) -> Optional[np.ndarray]:
@@ -175,6 +186,38 @@ def solve_target_pose(image, mtx: np.ndarray, dist: np.ndarray, pattern: str):
     return R_target2cam_mat, tvec, len(corners)
 
 
+def read_arm_sample(arm) -> Tuple[Optional[Dict[str, float]], Any]:
+    """读取当前末端位姿与关节信息，作为手眼采样输入和追溯日志。"""
+    status = arm.get_status()
+    pose_resp = arm.get_pose()
+    pose = pose_resp.get("pose", {})
+    joints = (
+        status.get("right_joints")
+        or status.get("joints")
+        or status.get("left_joints")
+    )
+
+    required_keys = {"x", "y", "z", "roll", "pitch", "yaw"}
+    if not pose or not required_keys.issubset(pose):
+        return None, joints
+
+    normalized_pose = {
+        "x": float(pose["x"]),
+        "y": float(pose["y"]),
+        "z": float(pose["z"]),
+        "roll": float(pose["roll"]),
+        "pitch": float(pose["pitch"]),
+        "yaw": float(pose["yaw"]),
+    }
+    return normalized_pose, joints
+
+
+def append_jsonl(path: Path, record: Dict[str, Any]):
+    """追加写入 JSONL 日志，便于现场追溯每组样本。"""
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def calibrate_camera(cam, num_images: int = CAMERA_IMAGES,
                      pattern: str = "chessboard") -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -275,14 +318,17 @@ def calibrate_handeye(
     dist: np.ndarray,
     num_poses: int = HANDEYE_POSES,
     pattern: str = "chessboard",
+    collection_mode: str = "manual",
 ):
     """
     阶段B: 手眼标定 (eye-in-hand)
-    机械臂移动到不同位姿，相机拍标定板，记录位姿对。
+    记录不同视角下的末端位姿与标定板位姿对。
     求解 AX = XB。
     """
     logger.info("=" * 60)
-    logger.info(f"阶段B: 手眼标定 (eye-in-hand, pattern={pattern})")
+    logger.info(
+        f"阶段B: 手眼标定 (eye-in-hand, pattern={pattern}, collection={collection_mode})"
+    )
     logger.info("=" * 60)
     logger.info(f"需要 {num_poses} 组位姿对")
     logger.info("要求:")
@@ -291,8 +337,43 @@ def calibrate_handeye(
         logger.info("  2. 每次至少识别到 6 个角点，最好 >10 个")
     else:
         logger.info("  1. 棋盘格固定放置在操作台上")
-    logger.info("  2. 每次机械臂移动到不同位姿后拍照")
-    logger.info("  3. 位姿差异尽量大（平移+旋转都变化）")
+    if collection_mode == "manual":
+        logger.info("  2. 进入示教模式后，人工拖动机械臂到不同位姿再采样")
+        logger.info("  3. 脚本直接读取 /api/pose 作为末端位姿")
+        logger.info("  4. 同时保存 /api/status 中的 right_joints 作为追溯日志")
+    else:
+        logger.info("  2. 每次机械臂移动到不同位姿后拍照")
+        logger.info("  3. 位姿差异尽量大（平移+旋转都变化）")
+    logger.info("  5. 标定板在图像中尽量覆盖不同区域、角度和距离")
+    logger.info("")
+
+    if collection_mode not in {"manual", "auto"}:
+        raise ValueError(f"不支持的 collection_mode: {collection_mode}")
+
+    if collection_mode == "manual":
+        logger.warning("手动采样模式不会发送任何 move 指令，只会切换示教模式并读取当前位姿")
+        input("按 Enter 进入示教模式（零力矩拖动），准备开始手动摆位...")
+        arm.teach_mode(enable=True)
+
+    sample_log_path = CALIB_DIR / "handeye_samples.jsonl"
+    if sample_log_path.exists():
+        sample_log_path.unlink()
+
+    metadata = {
+        "pattern": pattern,
+        "collection_mode": collection_mode,
+        "charuco_board": {
+            "source_pdf": str(Path(__file__).parent / "标定标记" / "标定标记全集.pdf"),
+            "page": 1,
+            "squares": list(CHARUCO_SQUARES),
+            "square_mm": CHARUCO_SQUARE_MM,
+            "marker_mm": CHARUCO_MARKER_MM,
+            "dictionary": CHARUCO_DICT_NAME,
+        },
+    }
+    append_jsonl(sample_log_path, {"type": "session", **metadata})
+
+    logger.info(f"样本日志将保存到: {sample_log_path}")
     logger.info("")
 
     R_gripper2base = []
@@ -320,60 +401,115 @@ def calibrate_handeye(
         (0.275, -0.12, 0.50, -2.541, -0.952, 2.541),
     ]
 
-    for i, pose in enumerate(preset_poses[:num_poses]):
-        x, y, z, roll, pitch, yaw = pose
-        logger.info(f"\n位姿 {i+1}/{num_poses}: ({x:.3f}, {y:.3f}, {z:.3f})")
+    try:
+        attempt = 0
+        while len(R_gripper2base) < num_poses:
+            attempt += 1
+            sample_idx = len(R_gripper2base) + 1
 
-        # 移动机械臂
-        input("  按 Enter 移动机械臂...")
-        try:
-            arm.move_linear(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, speed=0.15)
-            arm.wait_until_idle()
-        except Exception as e:
-            logger.error(f"  移动失败: {e}")
-            skip = input("  跳过此位姿? (y/n): ").strip().lower()
-            if skip == 'y':
-                continue
-            return
-
-        # 拍照
-        input("  按 Enter 拍照...")
-        image = cam.capture()
-        R_target2cam_mat, t_target2cam_vec, detected_points = solve_target_pose(
-            image, mtx, dist, pattern
-        )
-
-        if R_target2cam_mat is None:
-            if pattern == "charuco":
-                logger.warning(
-                    f"  ❌ 未检测到足够 ChArUco 角点（当前 {detected_points} 个），"
-                    "请调整板位置/角度/距离"
-                )
+            if collection_mode == "manual":
+                logger.info(f"\n样本 {sample_idx}/{num_poses}: 请人工拖动机械臂到新姿态")
+                cmd = input("  按 Enter 采样，输入 s 跳过，输入 q 结束: ").strip().lower()
+                if cmd == "q":
+                    break
+                if cmd == "s":
+                    logger.info("  已跳过本次采样")
+                    continue
             else:
-                logger.warning("  ❌ 未检测到棋盘格，请调整棋盘格位置或位姿")
-            continue
+                pose = preset_poses[len(R_gripper2base) % len(preset_poses)]
+                x, y, z, roll, pitch, yaw = pose
+                logger.info(f"\n位姿 {sample_idx}/{num_poses}: ({x:.3f}, {y:.3f}, {z:.3f})")
+                input("  按 Enter 移动机械臂...")
+                try:
+                    arm.move_linear(
+                        x=x, y=y, z=z,
+                        roll=roll, pitch=pitch, yaw=yaw,
+                        speed=0.15,
+                    )
+                    arm.wait_until_idle()
+                except Exception as e:
+                    logger.error(f"  移动失败: {e}")
+                    skip = input("  跳过此位姿? (y/n): ").strip().lower()
+                    if skip == "y":
+                        continue
+                    raise
+                input("  按 Enter 拍照...")
 
-        # 机械臂末端在基坐标系下的位姿
-        arm_pose = arm.get_pose()
-        p = arm_pose.get("pose", {})
-        if not p:
-            logger.warning("  无法读取机械臂位姿")
-            continue
+            image = cam.capture()
+            R_target2cam_mat, t_target2cam_vec, detected_points = solve_target_pose(
+                image, mtx, dist, pattern
+            )
 
-        # roll/pitch/yaw → 旋转矩阵
-        R_g2b = rpy_to_rotation_matrix(p["roll"], p["pitch"], p["yaw"])
-        t_g2b = np.array([p["x"], p["y"], p["z"]]).reshape(3, 1)
+            if R_target2cam_mat is None:
+                if pattern == "charuco":
+                    logger.warning(
+                        f"  ❌ 未检测到足够 ChArUco 角点（当前 {detected_points} 个），"
+                        "请调整板位置/角度/距离"
+                    )
+                else:
+                    logger.warning("  ❌ 未检测到棋盘格，请调整棋盘格位置或位姿")
+                append_jsonl(sample_log_path, {
+                    "type": "failed_sample",
+                    "attempt": attempt,
+                    "sample_index": sample_idx,
+                    "detected_points": int(detected_points),
+                    "reason": "target_not_detected",
+                })
+                continue
 
-        R_gripper2base.append(R_g2b)
-        t_gripper2base.append(t_g2b)
-        R_target2cam.append(R_target2cam_mat)
-        t_target2cam.append(t_target2cam_vec)
+            pose, joints = read_arm_sample(arm)
+            if pose is None:
+                logger.warning("  ❌ 无法从 /api/pose 读取完整末端位姿，已丢弃本次样本")
+                append_jsonl(sample_log_path, {
+                    "type": "failed_sample",
+                    "attempt": attempt,
+                    "sample_index": sample_idx,
+                    "detected_points": int(detected_points),
+                    "reason": "pose_unavailable",
+                    "right_joints": joints,
+                })
+                continue
 
-        image.save(save_dir / f"handeye_{i+1:02d}.png")
-        logger.info(f"  ✅ 记录位姿对 {i+1}（检测点数: {detected_points}）")
+            image_path = save_dir / f"handeye_{sample_idx:02d}.png"
+            image.save(image_path)
 
-    if len(R_gripper2base) < 6:
-        raise RuntimeError(f"有效位姿对不足（{len(R_gripper2base)} < 6）")
+            R_g2b = rpy_to_rotation_matrix(pose["roll"], pose["pitch"], pose["yaw"])
+            t_g2b = np.array([pose["x"], pose["y"], pose["z"]]).reshape(3, 1)
+
+            R_gripper2base.append(R_g2b)
+            t_gripper2base.append(t_g2b)
+            R_target2cam.append(R_target2cam_mat)
+            t_target2cam.append(t_target2cam_vec)
+
+            append_jsonl(sample_log_path, {
+                "type": "sample",
+                "attempt": attempt,
+                "sample_index": sample_idx,
+                "image_path": str(image_path),
+                "detected_points": int(detected_points),
+                "arm_pose": pose,
+                "right_joints": joints,
+                "target_rvec_matrix": R_target2cam_mat.tolist(),
+                "target_tvec_m": t_target2cam_vec.reshape(3).tolist(),
+            })
+            logger.info(
+                "  ✅ 记录位姿对 %s（检测点数: %s, pose=(%.3f, %.3f, %.3f)）",
+                sample_idx,
+                detected_points,
+                pose["x"], pose["y"], pose["z"],
+            )
+    finally:
+        if collection_mode == "manual":
+            try:
+                arm.teach_mode(enable=False)
+                logger.info("已退出示教模式")
+            except Exception as e:
+                logger.warning(f"退出示教模式失败，请现场手动确认: {e}")
+
+    if len(R_gripper2base) < MIN_VALID_HANDEYE_SAMPLES:
+        raise RuntimeError(
+            f"有效位姿对不足（{len(R_gripper2base)} < {MIN_VALID_HANDEYE_SAMPLES}）"
+        )
 
     # 手眼标定求解
     import cv2
@@ -394,6 +530,12 @@ def calibrate_handeye(
         t_cam2gripper=t_cam2gripper,
     )
     logger.info(f"手眼矩阵已保存: {CALIB_DIR / 'handeye_matrix.npz'}")
+    append_jsonl(sample_log_path, {
+        "type": "result",
+        "valid_samples": len(R_gripper2base),
+        "R_cam2gripper": R_cam2gripper.tolist(),
+        "t_cam2gripper": t_cam2gripper.reshape(3).tolist(),
+    })
     return R_cam2gripper, t_cam2gripper
 
 
@@ -449,9 +591,12 @@ def main():
     parser.add_argument("--mode", choices=["camera", "handeye", "all"], default="all",
                         help="标定模式 (默认 all)")
     parser.add_argument("--pattern", choices=["chessboard", "charuco"],
-                        default="chessboard",
-                        help="标定板类型 (默认 chessboard；charuco 抗遮挡，推荐)"
+                        default="charuco",
+                        help="标定板类型 (默认 charuco；使用标定标记全集.pdf 第1页)"
                              "——charuco 板由 scripts/gen_markers.py 生成")
+    parser.add_argument("--collection-mode", choices=["manual", "auto"],
+                        default="manual",
+                        help="手眼采样模式：manual=人工拖动后读取 /api/pose，auto=按预设位姿自动运动")
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -467,16 +612,16 @@ def main():
 
     if args.mode in ("handeye", "all"):
         if mtx is None:
-            # 尝试加载已有内参
-            intrinsics_file = CALIB_DIR / "camera_intrinsics.npz"
-            if intrinsics_file.exists():
-                data = np.load(intrinsics_file)
-                mtx, dist = data["mtx"], data["dist"]
-                logger.info("已加载现有内参")
-            else:
+            try:
+                mtx, dist = load_camera_intrinsics()
+            except FileNotFoundError:
                 logger.error("缺少内参，请先运行 --mode camera")
                 sys.exit(1)
-        calibrate_handeye(cam, arm, mtx, dist, pattern=args.pattern)
+        calibrate_handeye(
+            cam, arm, mtx, dist,
+            pattern=args.pattern,
+            collection_mode=args.collection_mode,
+        )
 
     generate_config_files()
 
