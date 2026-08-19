@@ -312,8 +312,10 @@ class VisionManager:
           面板布局 绿灯左/红灯右/白灯居中。灯亮时其半面变亮:
             左半面亮 = 绿灯   右半面亮 = 红灯   两边均衡 = 白灯
           零标定、对灯位漂移鲁棒。附最亮像素颜色交叉验证。
-        兜底路径（亮度对比失效时）:
-          ROI 检测（若标定过 lights_roi.json）→ 全图 HSV → DINO
+        兜底1（策略二: 三灯分类模型）:
+          MobileNetV3-Small 迁移学习, 手机照片训练 (white/green/red)
+          权重 weights/light_classifier.pth 存在时启用
+        兜底2: ROI 检测（若标定过 lights_roi.json）→ 全图 HSV → DINO
 
         返回: {"light_id", "switch_type", "pixel": (x, y),
                "color", "confidence", "method"}
@@ -328,6 +330,27 @@ class VisionManager:
                 return side_result
         except Exception as e:
             logger.warning(f"左右亮度检测异常: {e}")
+
+        # ---- 兜底1: 三灯分类模型（策略二）----
+        try:
+            from vision.light_classifier import get_light_classifier
+            clf = get_light_classifier()
+            r = clf.predict_light_id(image)
+            if r is not None and r[0] is not None:
+                light_id, color, conf = r
+                logger.info(
+                    f"策略二模型: {color} 亮 (light_id={light_id}, conf={conf})")
+                return {
+                    "light_id": light_id,
+                    "switch_type": SWITCH_PANEL["switch_type"].get(
+                        light_id, "button"),
+                    "pixel": (float(image.width / 2), float(image.height / 2)),
+                    "color": color,
+                    "confidence": round(float(conf), 3),
+                    "method": "light-classifier",
+                }
+        except Exception as e:
+            logger.warning(f"策略二模型分类异常: {e}")
 
         # ---- 兜底1: ROI 检测（lights_roi.json 标定过才有效） ----
         try:

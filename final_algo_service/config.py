@@ -119,6 +119,19 @@ TASK1_TRAJECTORIES = {
 }
 TASK1_PLAYBACK_SPEED = float(os.getenv("TASK1_PLAYBACK_SPEED", "1.0"))
 
+# 任务1 初始位关节角（轨迹1 task1.light_1_*.json 的 samples[0].joints）
+# 用途: 执行轨迹回放后（臂停在按钮位）用关节运动回初始位——
+#       return_home 轨迹回放有起点错位问题（其起点=拍照位≠按钮位），
+#       关节运动与起点无关，规划器避碰，是更稳的闭环方式。
+#       （Claude Code 审核 S1 修复 2026-08-19）
+TASK1_HOME_JOINTS = [
+    float(x) for x in os.getenv(
+        "TASK1_HOME_JOINTS",
+        "-0.005,-0.200,-1.621,0.392,0.114,-0.018,0.079"
+    ).split(",")
+]
+assert len(TASK1_HOME_JOINTS) == 7, f"初始位关节角需 7 个值: {TASK1_HOME_JOINTS}"
+
 
 def task1_traj_path(name: str) -> str:
     """回放用的 trajectory_id: 目录前缀 + 文件名"""
