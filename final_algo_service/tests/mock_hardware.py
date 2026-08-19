@@ -58,6 +58,16 @@ class MockArmClient:
         self._moving = False
         return {"success": True, "message": "Cartesian execution finished for right_arm"}
 
+    def playback(self, trajectory_id, speed_scale=1.0, loop_count=1):
+        """示教轨迹回放（任务1 示教方案）"""
+        logger.info(f"[MOCK] 回放轨迹 {trajectory_id} (speed={speed_scale}x)")
+        time.sleep(0.4)
+        return {"success": True, "message": "Playback finished"}
+
+    def teach_mode(self, enable=True):
+        logger.info(f"[MOCK] 示教模式 {'开启' if enable else '退出'}")
+        return {"success": True}
+
     def move_to_safe_height(self, speed=0.2):
         logger.info(f"[MOCK] 提到安全高度")
         self._z = 0.52

@@ -57,16 +57,16 @@ ARM_HOME_JOINTS = [0.0, 0.5, 0.0, -1.0, -0.1, -1.0, 0.0]
 # ============================================================
 
 # 任务1：开关面板
-# 情报（截图10）: 面板上方红黄绿3个灯，下方依次红按钮、拨杆(上下双向)、绿按钮，最右侧黑色长条
+# 情报（截图10）: 面板上方红白绿3个灯，下方依次红按钮、拨杆(上下双向)、绿按钮，最右侧黑色长条
 # ⚠️ 2026-08-17 官方《竞赛操作软件说明书》更正: 三灯为 红/白/绿（非红黄绿）
 #    "在红、白、绿灯中随机选择未使用灯色并点亮"
 # 电气柜上的开关面板位置（相机坐标系 → 需现场标定转换到机械臂基坐标系）
 SWITCH_PANEL = {
-    "photo_position": {     # 拍照位置（相机正对面板）
+    "photo_position": {     # 拍照位置（相机正对面板）——示教回放方案下仅作参考
         "x": 0.275, "y": -0.20, "z": 0.48,
         "roll": -3.141, "pitch": -1.552, "yaw": 3.141,
     },
-    "lights": {             # 三个灯的像素区域（用 Gemini335 采集后标定）
+    "lights": {             # 三个灯的像素区域（calibrate_lights.py 标定后可覆盖）
         "light_1": {"pixel_x": 320, "pixel_y": 200, "label": "按钮1", "color": "red"},
         "light_2": {"pixel_x": 320, "pixel_y": 300, "label": "拨动开关", "color": "white"},
         "light_3": {"pixel_x": 320, "pixel_y": 400, "label": "按钮2", "color": "green"},
@@ -78,6 +78,29 @@ SWITCH_PANEL = {
     },
     "toggle_direction": "down",     # 拨动方向：down（先下拨，灯未灭再上拨）
 }
+
+# ============================================================
+# 任务1 示教轨迹回放方案（2026-08-19 现场决策）
+# ============================================================
+# 四条轨迹: ①去拍照位 ②灯1(红按钮)按压 ③灯2(拨杆)拨动 ④灯3(绿按钮)按压
+# 轨迹文件保存在机械臂控制器 ~/trajectories/ 下（teach save 自动存放），
+# trajectory_id 传文件名即可（自动拼默认目录）。
+# 现场采集完成后改这里的文件名（或用环境变量覆盖）。
+TASK1_TRAJECTORIES = {
+    "goto_photo": os.getenv("TASK1_TRAJ_PHOTO", "task1_goto_photo.csv"),
+    "light_1":    os.getenv("TASK1_TRAJ_L1", "task1_light1.csv"),
+    "light_2":    os.getenv("TASK1_TRAJ_L2", "task1_light2.csv"),
+    "light_3":    os.getenv("TASK1_TRAJ_L3", "task1_light3.csv"),
+}
+TASK1_PLAYBACK_SPEED = float(os.getenv("TASK1_PLAYBACK_SPEED", "1.0"))
+
+# 灵巧手食指伸出姿态（10 自由度归一化 0-1；0=伸展 1=弯曲）
+# ⚠️ 现场确认后填入（用户提供参数）。设置一次后全程保持不动。
+HAND_POINT_POSE = os.getenv("HAND_POINT_POSE", "")  # 逗号分隔的 10 个数
+if HAND_POINT_POSE:
+    HAND_POINT_POSE = [float(x) for x in HAND_POINT_POSE.split(",")]
+else:
+    HAND_POINT_POSE = [0.0] * 10  # 占位：全伸展（待用户给食指姿态参数）
 
 # 任务2：长方体槽位和台面
 CUBE_SLOTS = {
