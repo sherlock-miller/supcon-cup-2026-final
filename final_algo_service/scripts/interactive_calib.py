@@ -435,9 +435,9 @@ def calibrate_handeye(cam: Gemini335, mtx: np.ndarray, dist: np.ndarray,
 
             # 3.5 与上一组对比——位姿不变=机械臂没动（掰错对象或示教未开）
             if len(R_g2b) >= 1:
-                d_t = float(np.linalg.norm(t_g2b_vec - t_g2b[-2]))
+                d_t = float(np.linalg.norm(t_g2b_vec - t_g2b[-1]))
                 d_r = float(np.degrees(np.arccos(np.clip(
-                    (np.trace(R_g2b_mat @ R_g2b[-2].T) - 1) / 2, -1, 1))))
+                    (np.trace(R_g2b_mat @ R_g2b[-1].T) - 1) / 2, -1, 1))))
                 if d_t < 0.005 and d_r < 1.0:
                     same_streak += 1
                     logger.warning(
