@@ -24,10 +24,46 @@ import time
 
 from config import (
     TASK2_PLAYBACK_SPEED, HAND_POSE_TASK2_1, HAND_POSE_TASK2_2,
+    TASK2_HOME_JOINTS, TASK2_HOME_POSE,
     task2_traj_path,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _go_home(arm) -> bool:
+    """关节运动回任务2初始位（审核 A1: 起点无关，规划器避碰）。
+
+    playback 回放不做避碰规划且要求起点=轨迹起点；
+    跨任务/中途失败后臂位置未知，直接回放有撞机风险。
+    """
+    try:
+        arm.move_joints(list(TASK2_HOME_JOINTS), speed=0.15)
+        logger.info("已回任务2初始位（关节运动）")
+        return True
+    except Exception as e:
+        logger.warning(f"关节运动回初始位失败: {e}，尝试 move_home")
+        try:
+            arm.move_home()
+            return True
+        except Exception as e2:
+            logger.warning(f"move_home 也失败: {e2}")
+            return False
+
+
+def _near_home(arm, tol_m: float = 0.05) -> bool:
+    """校验臂当前位姿是否接近初始位（审核 A2: 组间起点校验）"""
+    try:
+        pose = arm.get_pose().get("pose", {})
+        if not all(k in pose for k in ("x", "y", "z")):
+            return False
+        d = ((pose["x"] - TASK2_HOME_POSE["x"]) ** 2
+             + (pose["y"] - TASK2_HOME_POSE["y"]) ** 2
+             + (pose["z"] - TASK2_HOME_POSE["z"]) ** 2) ** 0.5
+        return d <= tol_m
+    except Exception as e:
+        logger.warning(f"位姿校验失败（视为不在初始位）: {e}")
+        return False
 
 
 def _get_cube_order(vision, image) -> Optional[List[int]]:
@@ -86,6 +122,10 @@ def execute_cube_task(arm, hand, vision) -> Tuple[bool, str]:
             except Exception as e:
                 logger.warning(f"位姿1设置失败（继续执行）: {e}")
 
+        # 步骤 2.5: 回初始位（A1 修复: 跨任务/中途失败后臂位置未知，
+        #           直接回放轨迹1 有起点错位+撞机风险）
+        _go_home(arm)
+
         # 步骤 3: 回放轨迹1 → 相机识别位
         goto_traj = task2_traj_path("goto_photo")
         logger.info(f"回放轨迹1（去识别位）: {goto_traj}")
@@ -115,6 +155,11 @@ def execute_cube_task(arm, hand, vision) -> Tuple[bool, str]:
 
             # 组间回轨迹1（第一组已在识别位）
             if i > 0:
+                # A2 修复: return 轨迹终点=初始位假设无校验，误差逐组
+                # 累积 → 回放轨迹1前先校验，不在初始位则关节运动拉回
+                if not _near_home(arm):
+                    logger.warning("组间校验: 臂不在初始位，关节运动拉回")
+                    _go_home(arm)
                 logger.info(f"回放轨迹1（回识别位）: {goto_traj}")
                 arm.playback(goto_traj, speed_scale=TASK2_PLAYBACK_SPEED)
 
@@ -148,4 +193,12 @@ def execute_cube_task(arm, hand, vision) -> Tuple[bool, str]:
 
     except Exception as e:
         logger.error(f"任务2异常: {e}", exc_info=True)
+        # A3 修复: 安全收尾——手回位姿1(若在抓取, 松开可能掉物, 保守
+        # 保持当前手姿避免半开状态) + 臂回初始位（尽力而为）
+        if hand is not None:
+            try:
+                hand.set_position(list(HAND_POSE_TASK2_1))
+            except Exception:
+                pass
+        _go_home(arm)
         return False, f"任务2异常: {type(e).__name__}: {str(e)[:200]}"

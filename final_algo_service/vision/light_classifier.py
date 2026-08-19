@@ -11,6 +11,7 @@
 import logging
 import os
 import threading
+import time
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -34,12 +35,18 @@ class LightClassifier:
         self._class_names = None
         self._load_lock = threading.Lock()
         self._load_error = None
+        self._load_error_ts = 0.0  # B7 修复: 失败可重试
 
     def _load(self):
-        if self._model is not None or self._load_error:
+        # B7 修复: 加载失败不永久缓存——60 秒后允许重试
+        if self._model is not None:
+            return
+        if self._load_error and time.time() - self._load_error_ts < 60:
             return
         with self._load_lock:
-            if self._model is not None or self._load_error:
+            if self._model is not None:
+                return
+            if self._load_error and time.time() - self._load_error_ts < 60:
                 return
             try:
                 import torch
@@ -48,6 +55,7 @@ class LightClassifier:
 
                 if not os.path.exists(WEIGHTS_PATH):
                     self._load_error = f"模型权重不存在: {WEIGHTS_PATH}"
+                    self._load_error_ts = time.time()
                     return
                 ckpt = torch.load(WEIGHTS_PATH, map_location="cpu",
                                   weights_only=False)
@@ -60,6 +68,7 @@ class LightClassifier:
                 model.eval()
                 self._model = model
                 self._class_names = ckpt["class_names"]
+                self._load_error = None
                 self._transform = transforms.Compose([
                     transforms.Resize(256),
                     transforms.CenterCrop(224),
@@ -71,6 +80,7 @@ class LightClassifier:
                     f"灯分类模型已加载 (val_acc={ckpt.get('val_acc', '?')})")
             except Exception as e:
                 self._load_error = f"模型加载失败: {e}"
+                self._load_error_ts = time.time()
                 logger.error(self._load_error)
 
     def predict(self, image) -> Optional[Tuple[str, float]]:

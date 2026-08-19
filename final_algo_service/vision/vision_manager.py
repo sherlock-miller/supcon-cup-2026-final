@@ -332,27 +332,34 @@ class VisionManager:
             logger.warning(f"左右亮度检测异常: {e}")
 
         # ---- 兜底1: 三灯分类模型（策略二）----
+        # B1 修复: conf 门槛——训练集无"无灯"类，softmax 对暗图也会
+        #         给出某灯号。低置信度丢弃，继续后续兜底。
         try:
             from vision.light_classifier import get_light_classifier
             clf = get_light_classifier()
             r = clf.predict_light_id(image)
             if r is not None and r[0] is not None:
                 light_id, color, conf = r
-                logger.info(
-                    f"策略二模型: {color} 亮 (light_id={light_id}, conf={conf})")
-                return {
-                    "light_id": light_id,
-                    "switch_type": SWITCH_PANEL["switch_type"].get(
-                        light_id, "button"),
-                    "pixel": (float(image.width / 2), float(image.height / 2)),
-                    "color": color,
-                    "confidence": round(float(conf), 3),
-                    "method": "light-classifier",
-                }
+                min_conf = float(os.environ.get("TASK1_CLF_MIN_CONF", "0.6"))
+                if conf < min_conf:
+                    logger.info(
+                        f"策略二模型置信度 {conf:.2f} < {min_conf} → 丢弃，继续兜底")
+                else:
+                    logger.info(
+                        f"策略二模型: {color} 亮 (light_id={light_id}, conf={conf})")
+                    return {
+                        "light_id": light_id,
+                        "switch_type": SWITCH_PANEL["switch_type"].get(
+                            light_id, "button"),
+                        "pixel": (float(image.width / 2), float(image.height / 2)),
+                        "color": color,
+                        "confidence": round(float(conf), 3),
+                        "method": "light-classifier",
+                    }
         except Exception as e:
             logger.warning(f"策略二模型分类异常: {e}")
 
-        # ---- 兜底1: ROI 检测（lights_roi.json 标定过才有效） ----
+        # ---- 兜底2: ROI 检测（lights_roi.json 标定过才有效） ----
         try:
             roi_result = self._detect_lit_light_roi(image)
             if roi_result is not None:
@@ -481,18 +488,23 @@ class VisionManager:
             light_id = TASK1_SIDE_LIGHT["equal_light_id"]   # 白灯
             side, expect_color = "both", "white"
 
-        # 颜色交叉验证（仅记录，以左右亮度为准）
+        # 颜色交叉验证（B2 修复: 不一致 → 返回 None 触发兜底链，
+        # 不再"仅记录 warning 仍以亮度为准"——白灯装偏左会被误判绿灯）
         if bright_color and bright_color != expect_color:
             logger.warning(
                 f"左右亮度判定 {light_id}({expect_color}) 与最亮像素颜色 "
-                f"{bright_color} 不一致（以亮度为准）")
-        else:
-            logger.info(f"左右亮度判定 {light_id}({expect_color})，"
-                        f"最亮像素颜色 {bright_color} 一致 ✓")
+                f"{bright_color} 不一致 → 主路径放弃，交给兜底链")
+            return None
+        logger.info(f"左右亮度判定 {light_id}({expect_color})，"
+                    f"最亮像素颜色 {bright_color} 一致 ✓")
 
-        confidence = round(min(1.0, abs(rel_diff) * 10 + 0.5), 3)
+        # B2 修复: confidence 随判定强度单调——|rel_diff| 越大越可信
         if side == "both":
-            confidence = round(min(1.0, max(0.5, overall / 255.0)), 3)
+            confidence = round(
+                min(1.0, max(0.5, (overall - white_min_v) / 100.0)), 3)
+        else:
+            margin = abs(rel_diff) - thr
+            confidence = round(min(1.0, 0.5 + margin * 15), 3)
 
         logger.info(
             f"左右亮度检测: V_left={v_left:.0f} V_right={v_right:.0f} "
@@ -662,23 +674,17 @@ class VisionManager:
     @staticmethod
     def _light_id_by_layout(cx: float, cy: float, img_w: int, img_h: int) -> str:
         """
-        布局先验兜底：灯垂直排列（从上到下 light_1/2/3），
-        若无法按 Y 判定则按水平排列（从左到右）。
+        布局先验兜底：灯水平排列（从左到右 light_3绿/light_2白/light_1红，
+        2026-08-19 现场确认布局）。
         返回 light_1/light_2/light_3。
         """
-        # 垂直三分（任务情报：面板上方红黄绿3灯垂直排列）
-        y_ratio = cy / max(img_h, 1)
-        if y_ratio < 0.30:
-            return "light_1"
-        if y_ratio < 0.60:
-            return "light_2"
-        # 水平三分（测试图/其他布局兜底）
+        # 水平三分（现场布局: 左绿/中白/右红）
         x_ratio = cx / max(img_w, 1)
-        if x_ratio < 0.30:
-            return "light_1"
-        if x_ratio < 0.60:
-            return "light_2"
-        return "light_3"
+        if x_ratio < 0.33:
+            return "light_3"   # 左 → 绿灯
+        if x_ratio < 0.66:
+            return "light_2"   # 中 → 白灯
+        return "light_1"       # 右 → 红灯
 
     # ================================================================
     # 任务2 专用：数字识别

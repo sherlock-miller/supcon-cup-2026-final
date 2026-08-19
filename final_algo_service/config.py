@@ -57,7 +57,8 @@ ARM_HOME_JOINTS = [0.0, 0.5, 0.0, -1.0, -0.1, -1.0, 0.0]
 # ============================================================
 
 # 任务1：开关面板
-# 情报（截图10）: 面板上方红白绿3个灯，下方依次红按钮、拨杆(上下双向)、绿按钮，最右侧黑色长条
+# 情报（截图10）: 面板水平布局——左绿灯、中白灯、右红灯（2026-08-19 现场确认:
+# 左右半面亮度判定依赖此布局）；下方依次红按钮、拨杆(上下双向)、绿按钮
 # ⚠️ 2026-08-17 官方《竞赛操作软件说明书》更正: 三灯为 红/白/绿（非红黄绿）
 #    "在红、白、绿灯中随机选择未使用灯色并点亮"
 # 电气柜上的开关面板位置（相机坐标系 → 需现场标定转换到机械臂基坐标系）
@@ -67,9 +68,10 @@ SWITCH_PANEL = {
         "roll": -3.141, "pitch": -1.552, "yaw": 3.141,
     },
     "lights": {             # 三个灯的像素区域（calibrate_lights.py 标定后可覆盖）
-        "light_1": {"pixel_x": 320, "pixel_y": 200, "label": "按钮1", "color": "red"},
-        "light_2": {"pixel_x": 320, "pixel_y": 300, "label": "拨动开关", "color": "white"},
-        "light_3": {"pixel_x": 320, "pixel_y": 400, "label": "按钮2", "color": "green"},
+                            # 占位=水平排列: 左绿/中白/右红（与左右亮度判定一致）
+        "light_3": {"pixel_x": 160, "pixel_y": 240, "label": "按钮2", "color": "green"},
+        "light_2": {"pixel_x": 320, "pixel_y": 240, "label": "拨动开关", "color": "white"},
+        "light_1": {"pixel_x": 480, "pixel_y": 240, "label": "按钮1", "color": "red"},
     },
     "switch_type": {         # 开关类型（情报：拨杆上下双向可拨）
         "light_1": "button",        # 红色按钮
@@ -194,6 +196,22 @@ TASK2_TRAJECTORIES = {
         "return": "task2_4_return.json"},
 }
 TASK2_PLAYBACK_SPEED = float(os.getenv("TASK2_PLAYBACK_SPEED", "1.0"))
+
+# 任务2 初始位关节角（审核 A1 修复: 任务开头回初始位用）
+# 默认复用任务1初始位（两任务共用同一安全初始位），
+# 若任务2 轨迹1 起点不同，现场用 TASK2_HOME_JOINTS 环境变量覆盖
+TASK2_HOME_JOINTS = [
+    float(x) for x in os.getenv(
+        "TASK2_HOME_JOINTS",
+        "-0.005,-0.200,-1.621,0.392,0.114,-0.018,0.079"
+    ).split(",")
+]
+# 任务2 初始位末端位姿（组间校验用, 审核 A2）
+TASK2_HOME_POSE = {
+    "x": float(os.getenv("TASK2_HOME_X", "-0.009")),
+    "y": float(os.getenv("TASK2_HOME_Y", "-0.157")),
+    "z": float(os.getenv("TASK2_HOME_Z", "0.320")),
+}
 
 
 def task2_traj_path(key: str, digit: int = 0) -> str:
