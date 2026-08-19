@@ -24,10 +24,32 @@ import numpy as np
 from config import (
     SWITCH_PANEL, ARM_SAFE_Z,
     TASK1_TRAJECTORIES, TASK1_PLAYBACK_SPEED, HAND_POINT_POSE,
+    TASK1_HOME_JOINTS,
     task1_traj_path,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _go_home(arm) -> bool:
+    """关节运动回任务1初始位。
+
+    return_home 轨迹回放有起点错位问题（其起点=拍照位，而执行轨迹
+    终点在按钮位）——审核 S1。关节运动与起点无关（规划器避碰），
+    是更稳的闭环方式，同时解决首轮起点假设问题（审核 M9）。
+    """
+    try:
+        arm.move_joints(list(TASK1_HOME_JOINTS), speed=0.15)
+        logger.info("已回任务1初始位（关节运动）")
+        return True
+    except Exception as e:
+        logger.warning(f"关节运动回初始位失败: {e}，尝试 move_home")
+        try:
+            arm.move_home()
+            return True
+        except Exception as e2:
+            logger.warning(f"move_home 也失败: {e2}")
+            return False
 
 
 def _load_traj_end_pose(traj_name: str):
@@ -103,6 +125,10 @@ def execute_switch_task(arm, hand, vision) -> Tuple[bool, str]:
             except Exception as e:
                 logger.warning(f"灵巧手姿态设置失败（继续执行）: {e}")
 
+        # 步骤 2.5: 回初始位（关节运动，起点无关）——首轮/跨任务后
+        #          臂可能不在轨迹1起点，直接回放会错位（审核 M9）
+        _go_home(arm)
+
         # 步骤 3: 回放轨迹1 —— 到拍照识别位
         goto_traj = task1_traj_path("goto_photo")
         logger.info(f"回放轨迹1（去拍照位）: {goto_traj}")
@@ -145,13 +171,9 @@ def execute_switch_task(arm, hand, vision) -> Tuple[bool, str]:
         if not result.get("success", True):
             logger.warning(f"操作轨迹回放异常: {result}")
 
-        # 5.5 回初始位（轨迹1 反转）——保证下一轮轨迹1起点正确
-        return_traj = task1_traj_path("return_home")
-        logger.info(f"回放回初始位轨迹: {return_traj}")
-        try:
-            arm.playback(return_traj, speed_scale=TASK1_PLAYBACK_SPEED)
-        except Exception as e:
-            logger.warning(f"回初始位失败（不阻断返回）: {e}")
+        # 5.5 回初始位（关节运动，替换 return_home 回放——审核 S1:
+        #     return_home 起点=拍照位 而此刻臂在按钮位，回放起点错位）
+        _go_home(arm)
 
         switch_type = SWITCH_PANEL["switch_type"].get(light_id, "button")
         return True, f"任务1完成: {light_id}({color}) {switch_type} 操作成功"
