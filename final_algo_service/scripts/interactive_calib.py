@@ -3,14 +3,16 @@
 交互式手眼标定程序（手掰示教 + 空格触发）
 ==========================================
 流程:
-  阶段1 相机内参标定: 标定纸固定或手拿移动，按空格拍 20 张
-  阶段2 手眼标定:     手掰机械臂到不同位姿，按空格采集 25 组
+  阶段1 相机内参标定: 相机固定，手拿标定纸移动/倾斜，按空格拍 15 张
+  阶段2 手眼标定:     标定纸固定，手掰机械臂到不同位姿，按空格采集 15 组
   阶段3 保存结果 → calibration.json（可注入 vision_manager）
 
 用法:
-  python interactive_calib.py --mode camera    # 仅内参
-  python interactive_calib.py --mode handeye   # 仅手眼（需已有内参）
-  python interactive_calib.py --mode all       # 全流程
+  python interactive_calib.py --mode camera            # 仅内参
+  python interactive_calib.py --mode handeye           # 仅手眼（需已有内参）
+  python interactive_calib.py --mode all               # 全流程
+  python interactive_calib.py --mode camera --images 15
+  python interactive_calib.py --mode handeye --poses 15
 
 交互:
   空格 = 采集一帧（成功才计数）
@@ -45,8 +47,13 @@ CHARUCO_SQUARE_MM = 30.0
 CHARUCO_MARKER_MM = 22.0
 CHARUCO_DICT_NAME = "DICT_6X6_250"
 
-CAMERA_IMAGES = 20
-HANDEYE_POSES = 25
+CAMERA_IMAGES = 15
+HANDEYE_POSES = 15
+
+# 粗略初始内参（仅用于内参采集时的标定板位姿多样性判断，不做精度用途）
+GUESS_MTX = np.array([[600, 0, 320],
+                      [0, 600, 240],
+                      [0, 0, 1]], dtype=np.float64)
 
 # 机械臂 API
 ARM_BASE_URL = os.getenv("ARM_BASE_URL", "http://192.168.0.22:8087")
@@ -320,27 +327,34 @@ def rpy_to_R(roll, pitch, yaw) -> np.ndarray:
 # ============================================================
 # 阶段1: 相机内参标定
 # ============================================================
-def calibrate_camera(cam: Gemini335) -> Tuple[np.ndarray, np.ndarray]:
+def calibrate_camera(cam: Gemini335, num_images: int = CAMERA_IMAGES
+                     ) -> Tuple[np.ndarray, np.ndarray]:
     import cv2
     logger.info("=" * 60)
-    logger.info("阶段1: 相机内参标定（预览窗口按空格拍 20 张）")
+    logger.info(f"阶段1: 相机内参标定（预览窗口按空格拍 {num_images} 张）")
     logger.info("=" * 60)
-    logger.info("操作: 在预览窗口中观察标定板识别情况（绿点=已识别）")
-    logger.info("      移动/倾斜标定纸，画面显示 OK 时按【空格】采集")
-    logger.info("      要求: 画面覆盖不同区域/角度/距离")
+    logger.info("操作: 相机固定不动，手持标定纸【移动/倾斜/旋转】")
+    logger.info("      画面显示 OK（绿点）时按【空格】采集")
+    logger.info("      要求: 标定板位姿多样性——不同位置/角度/距离各覆盖")
+    logger.info("      （与手眼标定相反: 内参是板动相机不动）")
+    logger.info("")
+    logger.info("标定板参数: ChArUco 5x7 方格30mm 标记22mm DICT_6X6_250")
+    logger.info("  ⚠️ 确认打印纸是 1:1 且方格实际尺寸=30mm（用尺量一下）")
     logger.info("")
 
     board = get_charuco_board()
     corners_list, ids_list = [], []
     img_size = None
+    pnp_poses = []      # 每张的 (rvec, tvec)——用于视角多样性检查
+    same_streak = 0     # 连续位姿不变计数
     save_dir = CALIB_DIR / "标定照片"
     save_dir.mkdir(exist_ok=True)
 
     pw = PreviewWindow(cam)
     pw.start()
     try:
-        while len(corners_list) < CAMERA_IMAGES:
-            logger.info(f"  等待采集 [{len(corners_list)}/{CAMERA_IMAGES}]（预览窗口按空格）...")
+        while len(corners_list) < num_images:
+            logger.info(f"  等待采集 [{len(corners_list)}/{num_images}]（预览窗口按空格）...")
             ev, data = pw.wait_event()
             if ev == "quit":
                 logger.info("用户退出")
@@ -349,6 +363,42 @@ def calibrate_camera(cam: Gemini335) -> Tuple[np.ndarray, np.ndarray]:
             if corners is None or ids is None:
                 logger.warning("  ❌ 当前帧角点不足，继续调整...")
                 continue
+
+            # 视角多样性检查: 粗略内参解 PnP → 与上一张比较板子位姿
+            # 板子不动 = 内参解算退化（与手眼位姿不变同理）
+            try:
+                obj_pts, img_pts = board.matchImagePoints(corners, ids)
+                obj_pts = np.asarray(obj_pts, dtype=np.float32).reshape(-1, 1, 3)
+                img_pts = np.asarray(img_pts, dtype=np.float32).reshape(-1, 1, 2)
+                ok_pnp, rvec, tvec = cv2.solvePnP(
+                    obj_pts, img_pts, GUESS_MTX, None,
+                    flags=cv2.SOLVEPNP_ITERATIVE)
+            except Exception:
+                ok_pnp = False
+            if ok_pnp and pnp_poses:
+                d_t = float(np.linalg.norm(tvec - pnp_poses[-1][1]))
+                R_a, _ = cv2.Rodrigues(pnp_poses[-1][0])
+                R_b, _ = cv2.Rodrigues(rvec)
+                d_r = float(np.degrees(np.arccos(np.clip(
+                    (np.trace(R_b @ R_a.T) - 1) / 2, -1, 1))))
+                if d_t < 0.02 and d_r < 5.0:
+                    same_streak += 1
+                    logger.warning(
+                        f"  ⚠️ 标定板位姿与上张几乎相同（Δ位置 {d_t*1000:.0f}mm, "
+                        f"Δ角度 {d_r:.1f}°）——请移动/倾斜标定纸！")
+                    if same_streak >= 3:
+                        logger.error(
+                            "连续 3 张位姿未变化，已中止采集。\n"
+                            "内参标定要求: 手持标定纸移动/倾斜/旋转，\n"
+                            "覆盖画面不同区域、不同角度、不同距离。\n"
+                            "确认后重新运行本脚本。")
+                        break
+                else:
+                    same_streak = 0
+                    logger.info(f"    Δ位置 {d_t*1000:.0f}mm, Δ角度 {d_r:.1f}° ✓")
+            if ok_pnp:
+                pnp_poses.append((rvec, tvec))
+
             corners_list.append(corners)
             ids_list.append(ids)
             img_size = gray_size(image)
@@ -527,7 +577,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["camera", "handeye", "all"],
                         default="all")
-    parser.add_argument("--poses", type=int, default=HANDEYE_POSES)
+    parser.add_argument("--images", type=int, default=CAMERA_IMAGES,
+                        help="内参标定照片数（默认 15）")
+    parser.add_argument("--poses", type=int, default=HANDEYE_POSES,
+                        help="手眼标定位姿组数（默认 15）")
     args = parser.parse_args()
 
     cam = Gemini335()
@@ -535,7 +588,7 @@ def main():
     try:
         mtx = dist = None
         if args.mode in ("camera", "all"):
-            mtx, dist = calibrate_camera(cam)
+            mtx, dist = calibrate_camera(cam, num_images=args.images)
         if args.mode in ("handeye", "all"):
             if mtx is None:
                 f = CALIB_DIR / "camera_intrinsics.npz"
