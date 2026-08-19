@@ -80,27 +80,39 @@ SWITCH_PANEL = {
 }
 
 # ============================================================
-# 任务1 示教轨迹回放方案（2026-08-19 现场决策）
+# 任务1 示教轨迹回放方案（2026-08-19 现场采集）
 # ============================================================
-# 四条轨迹: ①去拍照位 ②灯1(红按钮)按压 ③灯2(拨杆)拨动 ④灯3(绿按钮)按压
-# 轨迹文件保存在机械臂控制器 ~/trajectories/ 下（teach save 自动存放），
-# trajectory_id 传文件名即可（自动拼默认目录）。
-# 现场采集完成后改这里的文件名（或用环境变量覆盖）。
+# 轨迹文件在 现场配置/轨迹/ 下（已入库）。回放时 trajectory_id:
+#   TASK1_TRAJ_DIR 为空 → 传文件名（机械臂服务默认目录 ~/trajectories/）
+#   TASK1_TRAJ_DIR 非空 → 传该目录下的绝对路径（部署在工控机时用）
+# 部署时需把 现场配置/轨迹/*.json 放到机械臂服务可读的位置。
+TASK1_TRAJ_DIR = os.getenv("TASK1_TRAJ_DIR", "")  # 如 "C:/trajectories" 或 "/home/xia17/trajectories"
+
 TASK1_TRAJECTORIES = {
-    "goto_photo": os.getenv("TASK1_TRAJ_PHOTO", "task1_goto_photo.csv"),
-    "light_1":    os.getenv("TASK1_TRAJ_L1", "task1_light1.csv"),
-    "light_2":    os.getenv("TASK1_TRAJ_L2", "task1_light2.csv"),
-    "light_3":    os.getenv("TASK1_TRAJ_L3", "task1_light3.csv"),
+    "goto_photo":   "task1.light_1_20260819_153239.json",  # 轨迹1: 初始位→拍照位
+    "light_1":      "task1.light_2_r_20260819_160247.json",  # 红灯→红按钮按压
+    "light_2":      "task1.light_2_w_20260819_161501.json",  # 白灯→拨杆拨动
+    "light_3":      "task1.light_2_g_20260819_155931.json",  # 绿灯→绿按钮按压
+    "return_home":  "task1_return_home.json",              # 生成: 拍照位→初始位(轨迹1反转)
 }
 TASK1_PLAYBACK_SPEED = float(os.getenv("TASK1_PLAYBACK_SPEED", "1.0"))
 
+
+def task1_traj_path(name: str) -> str:
+    """回放用的 trajectory_id: 目录前缀 + 文件名"""
+    fn = TASK1_TRAJECTORIES.get(name, "")
+    if not fn:
+        return ""
+    if TASK1_TRAJ_DIR:
+        return os.path.join(TASK1_TRAJ_DIR, fn).replace("\\", "/")
+    return fn
+
+
 # 灵巧手食指伸出姿态（10 自由度归一化 0-1；0=伸展 1=弯曲）
-# ⚠️ 现场确认后填入（用户提供参数）。设置一次后全程保持不动。
-HAND_POINT_POSE = os.getenv("HAND_POINT_POSE", "")  # 逗号分隔的 10 个数
-if HAND_POINT_POSE:
-    HAND_POINT_POSE = [float(x) for x in HAND_POINT_POSE.split(",")]
-else:
-    HAND_POINT_POSE = [0.0] * 10  # 占位：全伸展（待用户给食指姿态参数）
+# 现场实测参数（用户提供 2026-08-19）: 0,0,1,0,0,1,1,1,1,1
+HAND_POINT_POSE = os.getenv("HAND_POINT_POSE", "0,0,1,0,0,1,1,1,1,1")
+HAND_POINT_POSE = [float(x) for x in HAND_POINT_POSE.split(",")]
+assert len(HAND_POINT_POSE) == 10, f"食指姿态需 10 个值: {HAND_POINT_POSE}"
 
 # 任务2：长方体槽位和台面
 CUBE_SLOTS = {

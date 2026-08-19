@@ -24,9 +24,58 @@ import numpy as np
 from config import (
     SWITCH_PANEL, ARM_SAFE_Z,
     TASK1_TRAJECTORIES, TASK1_PLAYBACK_SPEED, HAND_POINT_POSE,
+    task1_traj_path,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _load_traj_end_pose(traj_name: str):
+    """读轨迹 JSON 的 end_pose（拍照位/执行位参考，锁位防御用）"""
+    import json
+    import os
+    fn = TASK1_TRAJECTORIES.get(traj_name, "")
+    if not fn:
+        return None
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "现场配置", "轨迹", fn)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("end_pose")
+    except Exception as e:
+        logger.warning(f"轨迹 {traj_name} end_pose 读取失败: {e}")
+        return None
+
+
+def _lock_to_pose(arm, target_pose, tol_m=0.03):
+    """回放后锁位防御: 偏离目标位姿超阈值 → 直线拉回（定住）。
+
+    官方 playback 若带"回初始位"行为或 MIT 残余漂移，
+    回放完成后的臂位可能与轨迹终点不符——拍照识别会失败。
+    此防御: 比对当前位姿与轨迹 end_pose，偏差>3cm 时拉回。
+    """
+    try:
+        time.sleep(1.0)  # 等回放收尾动作结束
+        cur = arm.get_pose().get("pose", {})
+        dist = ((cur.get("x", 0) - target_pose["x"]) ** 2
+                + (cur.get("y", 0) - target_pose["y"]) ** 2
+                + (cur.get("z", 0) - target_pose["z"]) ** 2) ** 0.5
+        if dist > tol_m:
+            logger.warning(
+                f"回放后偏离目标位 {dist * 1000:.0f}mm（>阈值 {tol_m * 1000:.0f}mm），"
+                f"拉回轨迹终点定住")
+            arm.move_linear(
+                x=target_pose["x"], y=target_pose["y"], z=target_pose["z"],
+                roll=target_pose.get("roll"), pitch=target_pose.get("pitch"),
+                yaw=target_pose.get("yaw"),
+                speed=0.10, check_workspace=False)  # 轨迹自身保证安全
+        else:
+            logger.info(f"回放到位 (偏差 {dist * 1000:.0f}mm < 30mm) ✓")
+    except Exception as e:
+        logger.warning(f"锁位防御异常（不阻断流程）: {e}")
 
 
 def execute_switch_task(arm, hand, vision) -> Tuple[bool, str]:
@@ -55,11 +104,16 @@ def execute_switch_task(arm, hand, vision) -> Tuple[bool, str]:
                 logger.warning(f"灵巧手姿态设置失败（继续执行）: {e}")
 
         # 步骤 3: 回放轨迹1 —— 到拍照识别位
-        goto_traj = TASK1_TRAJECTORIES["goto_photo"]
+        goto_traj = task1_traj_path("goto_photo")
         logger.info(f"回放轨迹1（去拍照位）: {goto_traj}")
         result = arm.playback(goto_traj, speed_scale=TASK1_PLAYBACK_SPEED)
         if not result.get("success", True):
             logger.warning(f"轨迹1回放异常: {result}")
+
+        # 3.5 锁位防御: 回放后若被拉回初始位/漂移 → 拉回拍照位定住
+        goto_end = _load_traj_end_pose("goto_photo")
+        if goto_end:
+            _lock_to_pose(arm, goto_end)
 
         # 步骤 4: 拍照 + 亮灯识别（ROI 优先，失败重试一次）
         vision.initialize()
@@ -83,13 +137,21 @@ def execute_switch_task(arm, hand, vision) -> Tuple[bool, str]:
             f"confidence={lit_light.get('confidence')})")
 
         # 步骤 5: 按识别结果回放对应轨迹
-        action_traj = TASK1_TRAJECTORIES.get(light_id)
+        action_traj = task1_traj_path(light_id)
         if not action_traj:
             return False, f"无 {light_id} 对应的示教轨迹配置"
         logger.info(f"回放操作轨迹: {light_id} → {action_traj}")
         result = arm.playback(action_traj, speed_scale=TASK1_PLAYBACK_SPEED)
         if not result.get("success", True):
             logger.warning(f"操作轨迹回放异常: {result}")
+
+        # 5.5 回初始位（轨迹1 反转）——保证下一轮轨迹1起点正确
+        return_traj = task1_traj_path("return_home")
+        logger.info(f"回放回初始位轨迹: {return_traj}")
+        try:
+            arm.playback(return_traj, speed_scale=TASK1_PLAYBACK_SPEED)
+        except Exception as e:
+            logger.warning(f"回初始位失败（不阻断返回）: {e}")
 
         switch_type = SWITCH_PANEL["switch_type"].get(light_id, "button")
         return True, f"任务1完成: {light_id}({color}) {switch_type} 操作成功"
