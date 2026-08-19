@@ -306,13 +306,16 @@ class VisionManager:
         image: Image.Image,
     ) -> Optional[Dict[str, Any]]:
         """
-        检测开关面板上哪个灯亮了（HSV 颜色检测 + 布局先验验证）。
+        检测开关面板上哪个灯亮了（红/白/绿）。
 
-        策略：
-        1. HSV 检测红/黄/绿亮灯候选（V 阈值区分亮灭，可靠性最高）
-        2. 颜色 → 灯号映射（config.SWITCH_PANEL["lights"] 每盏灯的颜色）
-        3. 布局先验兜底：颜色无法确定时按垂直/水平三分定位灯号
-        4. DINO 兜底：HSV 无结果时检测"亮灯"框 + 框内颜色验证
+        主路径（ROI）: 拍照位姿固定 → 三灯在图像中的像素位置固定。
+          对每个预设 ROI 统计亮像素占比(V≥170) + 颜色，亮灯 =
+          占比最高且 ≥8% 且显著高于次亮灯(≥1.5x)。最可靠路径。
+          ROI 现场标定: scripts/calibrate_lights.py → 现场配置/lights_roi.json。
+        兜底路径（ROI 未标定/失效时）:
+          1. 全图 HSV 亮灯检测 → 颜色→灯号映射
+          2. 布局先验: 垂直/水平三分定位灯号
+          3. DINO 检测"亮灯"框 + 框内颜色验证
 
         返回: {"light_id", "switch_type", "pixel": (x, y),
                "color", "confidence", "method"}
@@ -320,7 +323,15 @@ class VisionManager:
         """
         from config import SWITCH_PANEL
 
-        # ---- 候选收集：HSV 主路径 + DINO 兜底 ----
+        # ---- 主路径: ROI 检测 ----
+        try:
+            roi_result = self._detect_lit_light_roi(image)
+            if roi_result is not None:
+                return roi_result
+        except Exception as e:
+            logger.warning(f"ROI 亮灯检测异常: {e}")
+
+        # ---- 兜底路径: 全图 HSV + DINO + 布局先验 ----
         lit_candidates: List[Dict[str, Any]] = []
 
         try:
@@ -381,6 +392,123 @@ class VisionManager:
             "color": best["color"],
             "confidence": round(float(best.get("score", 0.0)), 3),
             "method": best.get("method", "hsv"),
+        }
+
+    def _detect_lit_light_roi(
+        self, image: Image.Image
+    ) -> Optional[Dict[str, Any]]:
+        """ROI 亮灯检测：三个灯的预设像素位置分别判亮灭。
+
+        原理: 拍照位姿固定 → 三灯在图像中的像素位置固定。
+        判定: 每 ROI 内高亮像素(V≥170)占比 = lit_score；
+              亮灯 = lit_score 最高、≥8%、且 ≥ 次亮灯×1.5（唯一性）。
+              颜色仅作验证输出（以位置定灯号，防颜色误判）。
+
+        ROI 来源: 现场配置/lights_roi.json（calibrate_lights.py 标定）
+                 缺失时回退 config.SWITCH_PANEL["lights"] 占位像素。
+        """
+        import json
+        import os
+
+        from config import SWITCH_PANEL
+
+        # ---- ROI 加载 ----
+        roi_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "现场配置", "lights_roi.json")
+        light_cfg = SWITCH_PANEL.get("lights", {})
+        rois: Dict[str, Dict[str, Any]] = {}
+        if os.path.exists(roi_file):
+            try:
+                with open(roi_file, encoding="utf-8") as f:
+                    rois = json.load(f)
+                if rois:
+                    logger.info(f"使用现场标定 ROI: {roi_file} ({len(rois)} 灯)")
+            except Exception as e:
+                logger.warning(f"lights_roi.json 读取失败: {e}")
+        if not rois:
+            for lid, cfg in light_cfg.items():
+                rois[lid] = {
+                    "pixel_x": cfg.get("pixel_x", 320),
+                    "pixel_y": cfg.get("pixel_y", 240),
+                    "radius": cfg.get("radius", 30),
+                }
+            logger.info("lights_roi.json 不存在，使用 config 占位 ROI")
+        if not rois:
+            return None
+
+        # ---- 每 ROI 统计 ----
+        import cv2
+        arr = np.asarray(image.convert("RGB"))
+        h, w = arr.shape[:2]
+        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+
+        stats: Dict[str, Dict[str, Any]] = {}
+        for lid, roi in rois.items():
+            cx = int(roi.get("pixel_x", 320))
+            cy = int(roi.get("pixel_y", 240))
+            r = int(roi.get("radius", 30))
+            x1, y1 = max(0, cx - r), max(0, cy - r)
+            x2, y2 = min(w, cx + r), min(h, cy + r)
+            if x2 - x1 < 3 or y2 - y1 < 3:
+                continue
+            hh = hsv[y1:y2, x1:x2, 0]
+            ss = hsv[y1:y2, x1:x2, 1]
+            vv = hsv[y1:y2, x1:x2, 2]
+            total = hh.size
+            lit_mask = vv >= 170
+            lit_score = float(lit_mask.sum()) / total
+            # 颜色占比（亮像素上统计）
+            red = float((((hh <= 12) | (hh >= 168))
+                         & (ss >= 80) & (vv >= 140)).sum()) / total
+            green = float(((hh >= 40) & (hh <= 90)
+                           & (ss >= 80) & (vv >= 140)).sum()) / total
+            white = float(((ss <= 45) & (vv >= 200)).sum()) / total
+            color, color_ratio = max(
+                (("red", red), ("green", green), ("white", white)),
+                key=lambda x: x[1])
+            stats[lid] = {
+                "lit_score": round(lit_score, 4),
+                "color": color,
+                "color_ratio": round(color_ratio, 4),
+                "mean_v": float(vv.mean()),
+                "pixel": (float(cx), float(cy)),
+            }
+
+        if not stats:
+            return None
+
+        # ---- 亮灯判定 ----
+        ranked = sorted(stats.items(),
+                        key=lambda kv: kv[1]["lit_score"], reverse=True)
+        best_lid, best_info = ranked[0]
+        second_score = ranked[1][1]["lit_score"] if len(ranked) > 1 else 0.0
+        if best_info["lit_score"] < 0.08:
+            logger.info(
+                f"ROI 检测: 最亮灯 {best_lid} lit_score={best_info['lit_score']:.3f} "
+                f"低于阈值 0.08 → 判定无灯亮")
+            return None
+        if len(ranked) > 1 and best_info["lit_score"] < second_score * 1.5:
+            logger.warning(
+                f"ROI 检测: 多灯候选亮度接近 "
+                f"({best_lid}={best_info['lit_score']:.3f} vs "
+                f"{ranked[1][0]}={second_score:.3f}) → 结果不唯一，交给兜底路径")
+            return None
+
+        # 颜色验证（仅记录，以位置定灯号）
+        preset_color = light_cfg.get(best_lid, {}).get("color")
+        if preset_color and best_info["color"] != preset_color:
+            logger.warning(
+                f"ROI 检测: {best_lid} 位置最亮但颜色判定 "
+                f"{best_info['color']} ≠ 预设 {preset_color}（以位置为准）")
+
+        return {
+            "light_id": best_lid,
+            "switch_type": SWITCH_PANEL["switch_type"].get(best_lid, "button"),
+            "pixel": best_info["pixel"],
+            "color": best_info["color"],
+            "confidence": round(best_info["lit_score"], 3),
+            "method": "roi",
         }
 
     @staticmethod
