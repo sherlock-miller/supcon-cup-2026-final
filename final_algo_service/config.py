@@ -116,7 +116,7 @@ assert len(HAND_POINT_POSE) == 10, f"食指姿态需 10 个值: {HAND_POINT_POSE
 
 # 任务2：长方体槽位和台面
 CUBE_SLOTS = {
-    "photo_position": {     # 拍照位置（俯视槽位区域）
+    "photo_position": {     # 拍照位置（俯视槽位区域）——示教回放方案下仅作参考
         "x": 0.275, "y": -0.10, "z": 0.52,
         "roll": -3.141, "pitch": 0.0, "yaw": 3.141,  # 相机朝下
     },
@@ -131,6 +131,56 @@ CUBE_SLOTS = {
         "x": 0.30, "y": -0.05, "z": 0.46,
     },
 }
+
+# ============================================================
+# 任务2 示教轨迹回放方案（2026-08-19 现场决策）
+# ============================================================
+# 轨迹文件在 现场配置/轨迹/ 下（现场采集后入库）。
+# 每组数字 N 三条轨迹:
+#   approach: 轨迹N-1 拍照位→抓取位（含伸入）
+#   grasp:    轨迹N-2 抓取动作（配合灵巧手位姿2）
+#   return:   轨迹N-3 回归初始位
+# 任务2的"轨迹1"(goto_photo): 初始位→相机识别位
+TASK2_TRAJ_DIR = os.getenv("TASK2_TRAJ_DIR", "")  # 空=机械臂服务默认目录
+
+TASK2_TRAJECTORIES = {
+    "goto_photo": "task2_goto_photo.json",
+    1: {"approach": "task2_1_approach.json",
+        "grasp": "task2_1_grasp.json",
+        "return": "task2_1_return.json"},
+    2: {"approach": "task2_2_approach.json",
+        "grasp": "task2_2_grasp.json",
+        "return": "task2_2_return.json"},
+    3: {"approach": "task2_3_approach.json",
+        "grasp": "task2_3_grasp.json",
+        "return": "task2_3_return.json"},
+    4: {"approach": "task2_4_approach.json",
+        "grasp": "task2_4_grasp.json",
+        "return": "task2_4_return.json"},
+}
+TASK2_PLAYBACK_SPEED = float(os.getenv("TASK2_PLAYBACK_SPEED", "1.0"))
+
+
+def task2_traj_path(key: str, digit: int = 0) -> str:
+    """任务2轨迹回放路径: key=goto_photo 或 (segment, digit)"""
+    if key == "goto_photo":
+        fn = TASK2_TRAJECTORIES["goto_photo"]
+    else:
+        fn = TASK2_TRAJECTORIES.get(digit, {}).get(key, "")
+    if not fn:
+        return ""
+    if TASK2_TRAJ_DIR:
+        return os.path.join(TASK2_TRAJ_DIR, fn).replace("\\", "/")
+    return fn
+
+
+# 任务2 灵巧手位姿（10 自由度归一化 0-1；0=伸展 1=弯曲）
+# 位姿1: 任务2移动/拍照时的手姿（⚠️ 现场确认后填入）
+# 位姿2: 抓取时的手姿（⚠️ 现场确认后填入）
+HAND_POSE_TASK2_1 = os.getenv("HAND_POSE_TASK2_1", "0,0,0,0,0,0,0,0,0,0")
+HAND_POSE_TASK2_2 = os.getenv("HAND_POSE_TASK2_2", "1,1,1,1,1,1,1,1,1,1")
+HAND_POSE_TASK2_1 = [float(x) for x in HAND_POSE_TASK2_1.split(",")]
+HAND_POSE_TASK2_2 = [float(x) for x in HAND_POSE_TASK2_2.split(",")]
 
 # 任务3：几何体槽位
 SHAPE_SLOTS = {
