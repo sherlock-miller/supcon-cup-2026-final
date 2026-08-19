@@ -475,11 +475,19 @@ def calibrate_handeye(cam: Gemini335, mtx: np.ndarray, dist: np.ndarray,
             R_target2cam, _ = cv2.Rodrigues(rvec)
             t_target2cam = tvec.reshape(3, 1) / 1000.0  # mm→m
 
-            # 3. 读机械臂末端位姿
-            pose = get_arm_pose()
-            if pose is None:
+            # 3. 读机械臂末端位姿——连续 3 次取平均（MIT 模式下臂有
+            #    缓慢漂移，单次读数噪声可达 cm 级，平均可显著降噪）
+            pose_reads = []
+            for _k in range(3):
+                p = get_arm_pose()
+                if p is not None:
+                    pose_reads.append(p)
+                time.sleep(0.25)
+            if len(pose_reads) < 2:
                 logger.warning("  ❌ 机械臂位姿读取失败，重试")
                 continue
+            pose = {k: float(np.mean([p[k] for p in pose_reads]))
+                    for k in ("x", "y", "z", "roll", "pitch", "yaw")}
             R_g2b_mat = rpy_to_R(pose["roll"], pose["pitch"], pose["yaw"])
             t_g2b_vec = np.array([pose["x"], pose["y"], pose["z"]]).reshape(3, 1)
 
