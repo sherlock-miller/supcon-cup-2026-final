@@ -103,6 +103,78 @@ def detect_charuco(image):
     return charuco_corners, charuco_ids
 
 
+def rpy_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """XYZ 固定轴欧拉角 → 旋转矩阵。"""
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(roll), -np.sin(roll)],
+        [0, np.sin(roll), np.cos(roll)],
+    ])
+    Ry = np.array([
+        [np.cos(pitch), 0, np.sin(pitch)],
+        [0, 1, 0],
+        [-np.sin(pitch), 0, np.cos(pitch)],
+    ])
+    Rz = np.array([
+        [np.cos(yaw), -np.sin(yaw), 0],
+        [np.sin(yaw), np.cos(yaw), 0],
+        [0, 0, 1],
+    ])
+    return Rz @ Ry @ Rx
+
+
+def solve_target_pose(image, mtx: np.ndarray, dist: np.ndarray, pattern: str):
+    """
+    求解标定板在相机坐标系下的位姿。
+
+    Returns:
+        (R_target2cam, t_target2cam, detected_points)
+        或 (None, None, 0)
+    """
+    import cv2
+
+    if pattern == "charuco":
+        corners, ids = detect_charuco(image)
+        if corners is None or ids is None:
+            return None, None, 0
+
+        board = get_charuco_board()
+        board_points = board.getChessboardCorners()
+        object_points = np.asarray(
+            [board_points[int(i)] for i in ids.flatten()],
+            dtype=np.float32,
+        ).reshape(-1, 1, 3)
+        image_points = np.asarray(corners, dtype=np.float32).reshape(-1, 1, 2)
+
+        if len(object_points) < 6:
+            return None, None, len(object_points)
+
+        ret, rvec, tvec = cv2.solvePnP(
+            object_points, image_points, mtx, dist,
+            flags=cv2.SOLVEPNP_ITERATIVE,
+        )
+        if not ret:
+            return None, None, len(object_points)
+
+        R_target2cam_mat, _ = cv2.Rodrigues(rvec)
+        return R_target2cam_mat, tvec, len(object_points)
+
+    objp = np.zeros((CHESSBOARD[0] * CHESSBOARD[1], 3), np.float32)
+    objp[:, :2] = (
+        np.mgrid[0:CHESSBOARD[0], 0:CHESSBOARD[1]].T.reshape(-1, 2)
+        * SQUARE_SIZE_MM
+    )
+    corners = detect_chessboard(image)
+    if corners is None:
+        return None, None, 0
+
+    ret, rvec, tvec = cv2.solvePnP(objp, corners, mtx, dist)
+    if not ret:
+        return None, None, len(corners)
+    R_target2cam_mat, _ = cv2.Rodrigues(rvec)
+    return R_target2cam_mat, tvec, len(corners)
+
+
 def calibrate_camera(cam, num_images: int = CAMERA_IMAGES,
                      pattern: str = "chessboard") -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -196,26 +268,32 @@ def calibrate_camera(cam, num_images: int = CAMERA_IMAGES,
     return mtx, dist
 
 
-def calibrate_handeye(cam, arm, mtx: np.ndarray, dist: np.ndarray, num_poses: int = HANDEYE_POSES):
+def calibrate_handeye(
+    cam,
+    arm,
+    mtx: np.ndarray,
+    dist: np.ndarray,
+    num_poses: int = HANDEYE_POSES,
+    pattern: str = "chessboard",
+):
     """
     阶段B: 手眼标定 (eye-in-hand)
-    机械臂移动到不同位姿，相机拍棋盘格，记录位姿对。
+    机械臂移动到不同位姿，相机拍标定板，记录位姿对。
     求解 AX = XB。
     """
-    import cv2
-
     logger.info("=" * 60)
-    logger.info("阶段B: 手眼标定 (eye-in-hand)")
+    logger.info(f"阶段B: 手眼标定 (eye-in-hand, pattern={pattern})")
     logger.info("=" * 60)
     logger.info(f"需要 {num_poses} 组位姿对")
     logger.info("要求:")
-    logger.info("  1. 棋盘格固定放置在操作台上")
+    if pattern == "charuco":
+        logger.info("  1. ChArUco 板固定放置在操作台上，尽量保持平整")
+        logger.info("  2. 每次至少识别到 6 个角点，最好 >10 个")
+    else:
+        logger.info("  1. 棋盘格固定放置在操作台上")
     logger.info("  2. 每次机械臂移动到不同位姿后拍照")
     logger.info("  3. 位姿差异尽量大（平移+旋转都变化）")
     logger.info("")
-
-    objp = np.zeros((CHESSBOARD[0] * CHESSBOARD[1], 3), np.float32)
-    objp[:, :2] = np.mgrid[0:CHESSBOARD[0], 0:CHESSBOARD[1]].T.reshape(-1, 2) * SQUARE_SIZE_MM
 
     R_gripper2base = []
     t_gripper2base = []
@@ -261,16 +339,19 @@ def calibrate_handeye(cam, arm, mtx: np.ndarray, dist: np.ndarray, num_poses: in
         # 拍照
         input("  按 Enter 拍照...")
         image = cam.capture()
-        corners = detect_chessboard(image)
+        R_target2cam_mat, t_target2cam_vec, detected_points = solve_target_pose(
+            image, mtx, dist, pattern
+        )
 
-        if corners is None:
-            logger.warning("  ❌ 未检测到棋盘格，请调整棋盘格位置或位姿")
+        if R_target2cam_mat is None:
+            if pattern == "charuco":
+                logger.warning(
+                    f"  ❌ 未检测到足够 ChArUco 角点（当前 {detected_points} 个），"
+                    "请调整板位置/角度/距离"
+                )
+            else:
+                logger.warning("  ❌ 未检测到棋盘格，请调整棋盘格位置或位姿")
             continue
-
-        # solvePnP: 棋盘格在相机坐标系下的位姿
-        ret, rvec, tvec = cv2.solvePnP(objp, corners, mtx, dist)
-        R_target2cam_mat, _ = cv2.Rodrigues(rvec)
-        t_target2cam_vec = tvec
 
         # 机械臂末端在基坐标系下的位姿
         arm_pose = arm.get_pose()
@@ -280,7 +361,7 @@ def calibrate_handeye(cam, arm, mtx: np.ndarray, dist: np.ndarray, num_poses: in
             continue
 
         # roll/pitch/yaw → 旋转矩阵
-        R_g2b, _ = cv2.Rodrigues(np.array([p["roll"], p["pitch"], p["yaw"]]))
+        R_g2b = rpy_to_rotation_matrix(p["roll"], p["pitch"], p["yaw"])
         t_g2b = np.array([p["x"], p["y"], p["z"]]).reshape(3, 1)
 
         R_gripper2base.append(R_g2b)
@@ -289,12 +370,13 @@ def calibrate_handeye(cam, arm, mtx: np.ndarray, dist: np.ndarray, num_poses: in
         t_target2cam.append(t_target2cam_vec)
 
         image.save(save_dir / f"handeye_{i+1:02d}.png")
-        logger.info(f"  ✅ 记录位姿对 {i+1}")
+        logger.info(f"  ✅ 记录位姿对 {i+1}（检测点数: {detected_points}）")
 
     if len(R_gripper2base) < 6:
         raise RuntimeError(f"有效位姿对不足（{len(R_gripper2base)} < 6）")
 
     # 手眼标定求解
+    import cv2
     logger.info("\n求解手眼标定矩阵 AX=XB ...")
     R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
         R_gripper2base, t_gripper2base,
@@ -394,7 +476,7 @@ def main():
             else:
                 logger.error("缺少内参，请先运行 --mode camera")
                 sys.exit(1)
-        calibrate_handeye(cam, arm, mtx, dist)
+        calibrate_handeye(cam, arm, mtx, dist, pattern=args.pattern)
 
     generate_config_files()
 
