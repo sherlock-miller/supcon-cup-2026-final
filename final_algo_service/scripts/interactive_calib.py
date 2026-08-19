@@ -239,6 +239,19 @@ def _calibrate_charuco_compat(corners_list, ids_list, board, img_size):
     return cv2.calibrateCamera(obj_points, img_points, img_size, None, None)
 
 
+def _save_handeye_progress(save_dir, R_g2b, t_g2b, R_t2c, t_t2c):
+    """位姿对即时存档（JSON）——支持中断后离线重算"""
+    import json
+    data = {
+        "R_g2b": [m.tolist() for m in R_g2b],
+        "t_g2b": [v.ravel().tolist() for v in t_g2b],
+        "R_t2c": [m.tolist() for m in R_t2c],
+        "t_t2c": [v.ravel().tolist() for v in t_t2c],
+    }
+    with open(save_dir / "handeye_poses.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
 def gray_size(image: Image.Image):
     """图像尺寸 (w, h)——ChArUco 标定需要"""
     import cv2
@@ -402,6 +415,8 @@ def calibrate_handeye(cam: Gemini335, mtx: np.ndarray, dist: np.ndarray,
             t_t2c.append(t_target2cam)
 
             image.save(save_dir / f"handeye_{len(R_g2b):02d}.png")
+            # 位姿即时存档（JSON）——采集中断/解算失败时可离线重算，不必重拍
+            _save_handeye_progress(save_dir, R_g2b, t_g2b, R_t2c, t_t2c)
             logger.info(f"  ✅ 第 {len(R_g2b)} 组（角点 {len(ids)}，末端 "
                         f"({pose['x']:.3f},{pose['y']:.3f},{pose['z']:.3f})）")
     finally:
