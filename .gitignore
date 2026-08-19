@@ -3,8 +3,7 @@
 Log/
 final_algo_service/Log/
 *.log
-现场配置/标定照片/
-现场配置/手眼标定照片/
+# 标定原始数据入库存档（队友复现/备份用）——照片+npz 均为数据交付物
 *.exe
 python-3.12.10-amd64.exe
 
