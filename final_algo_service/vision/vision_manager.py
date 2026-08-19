@@ -23,6 +23,7 @@
 import logging
 import math
 import socket
+import threading
 from typing import Dict, Any, Optional, Tuple, List
 
 from PIL import Image
@@ -53,51 +54,55 @@ class VisionManager:
         self._ocr = None
         self._camera = None
         self._initialized = False
+        self._init_lock = threading.Lock()
 
     def initialize(self):
-        """初始化所有视觉模型（首次调用时加载）"""
+        """初始化所有视觉模型（首次调用时加载，线程安全）"""
         if self._initialized:
             return
+        with self._init_lock:
+            if self._initialized:  # 双重检查
+                return
 
-        logger.info("初始化视觉模型...")
+            logger.info("初始化视觉模型...")
 
-        # 无网络时模型下载快速失败，避免挂起整个服务
-        socket.setdefaulttimeout(20)
+            # 无网络时模型下载快速失败，避免挂起整个服务
+            socket.setdefaulttimeout(20)
 
-        # CLIP 分类器（通用零样本：形状 + 场景）
-        try:
-            from vision.classifier import get_shape_classifier
-            self._classifier = get_shape_classifier()
-            logger.info("CLIP 形状分类器就绪")
-        except Exception as e:
-            logger.error(f"CLIP 加载失败: {e}")
+            # CLIP 分类器（通用零样本：形状 + 场景）
+            try:
+                from vision.classifier import get_shape_classifier
+                self._classifier = get_shape_classifier()
+                logger.info("CLIP 形状分类器就绪")
+            except Exception as e:
+                logger.error(f"CLIP 加载失败: {e}")
 
-        # Grounding DINO 检测器（复用初赛代码）
-        try:
-            from vision.detector import GroundingDinoDetector
-            self._detector = GroundingDinoDetector()
-            logger.info("Grounding DINO 检测器就绪")
-        except Exception as e:
-            logger.error(f"Grounding DINO 加载失败: {e}")
+            # Grounding DINO 检测器（复用初赛代码）
+            try:
+                from vision.detector import GroundingDinoDetector
+                self._detector = GroundingDinoDetector()
+                logger.info("Grounding DINO 检测器就绪")
+            except Exception as e:
+                logger.error(f"Grounding DINO 加载失败: {e}")
 
-        # EasyOCR
-        try:
-            from vision.ocr_engine import OCREngine
-            self._ocr = OCREngine()
-            logger.info("EasyOCR 就绪")
-        except Exception as e:
-            logger.error(f"EasyOCR 加载失败: {e}")
+            # EasyOCR
+            try:
+                from vision.ocr_engine import OCREngine
+                self._ocr = OCREngine()
+                logger.info("EasyOCR 就绪")
+            except Exception as e:
+                logger.error(f"EasyOCR 加载失败: {e}")
 
-        # 相机（占位：现场需替换为 Gemini335 SDK）
-        try:
-            from vision.camera import CameraWrapper
-            self._camera = CameraWrapper()
-            logger.info("相机接口就绪")
-        except Exception as e:
-            logger.error(f"相机初始化失败: {e}")
+            # 相机（占位：现场需替换为 Gemini335 SDK）
+            try:
+                from vision.camera import CameraWrapper
+                self._camera = CameraWrapper()
+                logger.info("相机接口就绪")
+            except Exception as e:
+                logger.error(f"相机初始化失败: {e}")
 
-        self._initialized = True
-        logger.info("视觉模型初始化完成")
+            self._initialized = True
+            logger.info("视觉模型初始化完成")
 
     # ================================================================
     # 拍照

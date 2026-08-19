@@ -203,25 +203,32 @@ class CLIPClassifier:
 
 
 # ============================================================
-# 单例管理 — 按用途分实例
+# 单例管理 — 按用途分实例（带线程锁，防并发 import 竞争）
 # ============================================================
+import threading as _threading
+
 _shape_classifier: Optional[CLIPClassifier] = None
 _scene_classifier: Optional[CLIPClassifier] = None
+_classifier_locks = {"shape": _threading.Lock(), "scene": _threading.Lock()}
 
 
 def get_shape_classifier() -> CLIPClassifier:
-    """获取形状分类器（任务3）"""
+    """获取形状分类器（任务3）——线程安全单例"""
     global _shape_classifier
     if _shape_classifier is None:
-        _shape_classifier = CLIPClassifier(labels=SHAPE_LABELS)
+        with _classifier_locks["shape"]:
+            if _shape_classifier is None:  # 双重检查
+                _shape_classifier = CLIPClassifier(labels=SHAPE_LABELS)
     return _shape_classifier
 
 
 def get_scene_classifier() -> CLIPClassifier:
-    """获取场景分类器（备用）"""
+    """获取场景分类器（备用）——线程安全单例"""
     global _scene_classifier
     if _scene_classifier is None:
-        _scene_classifier = CLIPClassifier(labels=CLASSIFY_LABELS)
+        with _classifier_locks["scene"]:
+            if _scene_classifier is None:
+                _scene_classifier = CLIPClassifier(labels=CLASSIFY_LABELS)
     return _scene_classifier
 
 
