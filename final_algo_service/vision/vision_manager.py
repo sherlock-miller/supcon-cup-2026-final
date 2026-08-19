@@ -308,14 +308,12 @@ class VisionManager:
         """
         检测开关面板上哪个灯亮了（红/白/绿）。
 
-        主路径（ROI）: 拍照位姿固定 → 三灯在图像中的像素位置固定。
-          对每个预设 ROI 统计亮像素占比(V≥170) + 颜色，亮灯 =
-          占比最高且 ≥8% 且显著高于次亮灯(≥1.5x)。最可靠路径。
-          ROI 现场标定: scripts/calibrate_lights.py → 现场配置/lights_roi.json。
-        兜底路径（ROI 未标定/失效时）:
-          1. 全图 HSV 亮灯检测 → 颜色→灯号映射
-          2. 布局先验: 垂直/水平三分定位灯号
-          3. DINO 检测"亮灯"框 + 框内颜色验证
+        主路径（左右半面亮度对比, 2026-08-19 现场方案）:
+          面板布局 绿灯左/红灯右/白灯居中。灯亮时其半面变亮:
+            左半面亮 = 绿灯   右半面亮 = 红灯   两边均衡 = 白灯
+          零标定、对灯位漂移鲁棒。附最亮像素颜色交叉验证。
+        兜底路径（亮度对比失效时）:
+          ROI 检测（若标定过 lights_roi.json）→ 全图 HSV → DINO
 
         返回: {"light_id", "switch_type", "pixel": (x, y),
                "color", "confidence", "method"}
@@ -323,7 +321,15 @@ class VisionManager:
         """
         from config import SWITCH_PANEL
 
-        # ---- 主路径: ROI 检测 ----
+        # ---- 主路径: 左右半面亮度对比 ----
+        try:
+            side_result = self._detect_light_by_side_brightness(image)
+            if side_result is not None:
+                return side_result
+        except Exception as e:
+            logger.warning(f"左右亮度检测异常: {e}")
+
+        # ---- 兜底1: ROI 检测（lights_roi.json 标定过才有效） ----
         try:
             roi_result = self._detect_lit_light_roi(image)
             if roi_result is not None:
@@ -393,6 +399,125 @@ class VisionManager:
             "confidence": round(float(best.get("score", 0.0)), 3),
             "method": best.get("method", "hsv"),
         }
+
+    def _detect_light_by_side_brightness(
+        self, image: Image.Image
+    ) -> Optional[Dict[str, Any]]:
+        """左右半面亮度对比检测亮灯（2026-08-19 现场方案）。
+
+        面板物理布局: 绿灯在左、红灯在右、白灯居中。
+        判定:
+          rel_diff = (V_left - V_right) / (V_left + V_right)
+          rel_diff >  +thr → 绿灯(左半面亮)
+          rel_diff <  -thr → 红灯(右半面亮)
+          |rel_diff| ≤ thr 且整体够亮 → 白灯(两边均衡)
+          整体平均亮度 < min_v → 无灯亮(None)
+        附: 最亮 1% 像素颜色分类，与左右判定交叉验证（仅记录）。
+        """
+        import cv2
+
+        from config import SWITCH_PANEL, TASK1_SIDE_LIGHT
+
+        arr = np.asarray(image.convert("RGB"))
+        h, w = arr.shape[:2]
+        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+        v = hsv[..., 2].astype(np.float32)
+
+        mid = w // 2
+        v_left = float(v[:, :mid].mean())
+        v_right = float(v[:, mid:].mean())
+        denom = v_left + v_right
+        rel_diff = (v_left - v_right) / denom if denom > 1 else 0.0
+
+        thr = float(TASK1_SIDE_LIGHT["diff_threshold"])
+        min_v = float(TASK1_SIDE_LIGHT["min_v"])
+        overall = (v_left + v_right) / 2.0
+
+        # 最亮像素颜色（交叉验证用）
+        bright_color, bright_pixel = self._brightest_region_color(hsv)
+
+        if overall < min_v:
+            logger.info(
+                f"左右亮度检测: 画面平均亮度 {overall:.0f} < {min_v:.0f} → 无灯亮")
+            return None
+
+        if rel_diff > thr:
+            light_id = TASK1_SIDE_LIGHT["left_light_id"]    # 左亮 → 绿灯
+            side, expect_color = "left", "green"
+        elif rel_diff < -thr:
+            light_id = TASK1_SIDE_LIGHT["right_light_id"]   # 右亮 → 红灯
+            side, expect_color = "right", "red"
+        else:
+            # 左右均衡: 白灯亮(够亮) vs 全灭(暗) —— 绝对亮度门槛区分
+            white_min_v = float(TASK1_SIDE_LIGHT.get("white_min_v", 100))
+            if overall < white_min_v:
+                logger.info(
+                    f"左右均衡但画面亮度 {overall:.0f} < 白灯门槛 {white_min_v:.0f}"
+                    f" → 判定无灯亮")
+                return None
+            light_id = TASK1_SIDE_LIGHT["equal_light_id"]   # 白灯
+            side, expect_color = "both", "white"
+
+        # 颜色交叉验证（仅记录，以左右亮度为准）
+        if bright_color and bright_color != expect_color:
+            logger.warning(
+                f"左右亮度判定 {light_id}({expect_color}) 与最亮像素颜色 "
+                f"{bright_color} 不一致（以亮度为准）")
+        else:
+            logger.info(f"左右亮度判定 {light_id}({expect_color})，"
+                        f"最亮像素颜色 {bright_color} 一致 ✓")
+
+        confidence = round(min(1.0, abs(rel_diff) * 10 + 0.5), 3)
+        if side == "both":
+            confidence = round(min(1.0, max(0.5, overall / 255.0)), 3)
+
+        logger.info(
+            f"左右亮度检测: V_left={v_left:.0f} V_right={v_right:.0f} "
+            f"rel_diff={rel_diff:+.3f} (thr={thr}) → {light_id}({side}亮)")
+
+        return {
+            "light_id": light_id,
+            "switch_type": SWITCH_PANEL["switch_type"].get(light_id, "button"),
+            "pixel": bright_pixel if bright_pixel else (float(w / 2), float(h / 2)),
+            "color": bright_color or expect_color,
+            "confidence": confidence,
+            "method": "side-brightness",
+        }
+
+    @staticmethod
+    def _brightest_region_color(hsv: np.ndarray) -> tuple:
+        """次亮区域（V 90-99 百分位）的颜色分类 + 质心。
+
+        用次亮而非最亮: LED 中心过曝成纯白(V=255)，最亮 1% 会
+        把彩色灯误判为 white。90-99 百分位是灯的真实发光色。
+        返回 (color, (cx, cy)): color ∈ red/green/white/None
+        """
+        v = hsv[..., 2].ravel()
+        if v.size == 0:
+            return None, None
+        thr_lo = np.percentile(v, 90.0)
+        thr_hi = np.percentile(v, 99.0)
+        mask = (hsv[..., 2] >= thr_lo) & (hsv[..., 2] <= thr_hi)
+        ys, xs = np.nonzero(mask)
+        if len(xs) == 0:
+            # 全图极暗（无亮区）→ 退回最亮 1%
+            thr = np.percentile(v, 99.0)
+            ys, xs = np.nonzero(hsv[..., 2] >= thr)
+            if len(xs) == 0:
+                return None, None
+        h_top = hsv[ys, xs, 0].astype(np.float32)
+        s_top = hsv[ys, xs, 1].astype(np.float32)
+        n = h_top.size
+        red_r = float(((h_top <= 12) | (h_top >= 168)).sum()) / n
+        green_r = float(((h_top >= 40) & (h_top <= 90)).sum()) / n
+        white_r = float((s_top <= 45).sum()) / n
+        color, ratio = max((("red", red_r), ("green", green_r),
+                            ("white", white_r)), key=lambda x: x[1])
+        if ratio < 0.2:
+            color = None
+        cx = float(xs.mean())
+        cy = float(ys.mean())
+        return color, (cx, cy)
 
     def _detect_lit_light_roi(
         self, image: Image.Image
