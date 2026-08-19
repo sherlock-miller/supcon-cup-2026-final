@@ -286,6 +286,24 @@ def get_arm_pose() -> Optional[dict]:
         return None
 
 
+def set_teach_mode(enable: bool) -> bool:
+    """切换机械臂示教模式（官方文档 §3.12）。
+
+    enable=True: 电机零力矩，手臂可自由拖动（手掰示教的前提）。
+    不开示教模式时电机锁死，机械臂根本掰不动——这是 25 组位姿
+    全相同事故的根因（掰的只能是相机/标定纸，关节角纹丝不动）。
+    """
+    import requests
+    try:
+        r = requests.post(f"{ARM_BASE_URL}/api/teach_mode",
+                          json={"enable": enable}, timeout=10)
+        r.raise_for_status()
+        return True
+    except Exception as e:
+        logger.warning(f"示教模式切换失败: {e}")
+        return False
+
+
 def rpy_to_R(roll, pitch, yaw) -> np.ndarray:
     Rx = np.array([[1, 0, 0],
                    [0, np.cos(roll), -np.sin(roll)],
@@ -362,7 +380,10 @@ def calibrate_handeye(cam: Gemini335, mtx: np.ndarray, dist: np.ndarray,
     logger.info("=" * 60)
     logger.info(f"阶段2: 手眼标定（手掰示教 + 空格采集 {num_poses} 组）")
     logger.info("=" * 60)
-    logger.info("操作: 1. 手掰机械臂到一个新位姿（标定纸在相机视野内）")
+    logger.info("正在开启示教模式（电机零力矩）——机械臂必须能自由拖动！")
+    if not set_teach_mode(True):
+        logger.warning("⚠️ 示教模式开启失败！若机械臂掰不动，先手动确认示教模式。")
+    logger.info("操作: 1. 掰【机械臂本体】（不是相机/标定纸）到新位姿")
     logger.info("      2. 手离开机械臂，预览窗口显示 OK 后按【空格】")
     logger.info("      3. 位姿差异尽量大（平移+旋转都变）")
     logger.info("")
@@ -371,6 +392,7 @@ def calibrate_handeye(cam: Gemini335, mtx: np.ndarray, dist: np.ndarray,
     R_t2c, t_t2c = [], []
     save_dir = CALIB_DIR / "手眼标定照片"
     save_dir.mkdir(exist_ok=True)
+    same_streak = 0  # 连续位姿不变计数
 
     pw = PreviewWindow(cam)
     pw.start()
@@ -411,6 +433,27 @@ def calibrate_handeye(cam: Gemini335, mtx: np.ndarray, dist: np.ndarray,
             R_g2b_mat = rpy_to_R(pose["roll"], pose["pitch"], pose["yaw"])
             t_g2b_vec = np.array([pose["x"], pose["y"], pose["z"]]).reshape(3, 1)
 
+            # 3.5 与上一组对比——位姿不变=机械臂没动（掰错对象或示教未开）
+            if len(R_g2b) >= 1:
+                d_t = float(np.linalg.norm(t_g2b_vec - t_g2b[-2]))
+                d_r = float(np.degrees(np.arccos(np.clip(
+                    (np.trace(R_g2b_mat @ R_g2b[-2].T) - 1) / 2, -1, 1))))
+                if d_t < 0.005 and d_r < 1.0:
+                    same_streak += 1
+                    logger.warning(
+                        f"  ⚠️ 位姿与上组几乎相同（Δ平移 {d_t*1000:.1f}mm, "
+                        f"Δ旋转 {d_r:.2f}°）——机械臂可能没动！")
+                    if same_streak >= 3:
+                        logger.error(
+                            "连续 3 组位姿未变化，已中止采集。\n"
+                            "请确认: ① 掰的是机械臂本体（银色臂杆），不是相机\n"
+                            "        ② 示教模式已开启（臂可自由拖动）\n"
+                            "确认后重新运行本脚本。")
+                        break
+                else:
+                    same_streak = 0
+                    logger.info(f"    Δ平移 {d_t*1000:.1f}mm, Δ旋转 {d_r:.1f}° ✓")
+
             R_g2b.append(R_g2b_mat)
             t_g2b.append(t_g2b_vec)
             R_t2c.append(R_target2cam)
@@ -423,6 +466,8 @@ def calibrate_handeye(cam: Gemini335, mtx: np.ndarray, dist: np.ndarray,
                         f"({pose['x']:.3f},{pose['y']:.3f},{pose['z']:.3f})）")
     finally:
         pw.stop()
+        logger.info("退出示教模式（恢复电机位置控制）...")
+        set_teach_mode(False)
 
     if len(R_g2b) < 8:
         raise RuntimeError(f"有效位姿对不足 {len(R_g2b)} < 8")
