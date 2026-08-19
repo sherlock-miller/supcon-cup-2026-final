@@ -427,9 +427,20 @@ def calibrate_handeye(cam: Gemini335, mtx: np.ndarray, dist: np.ndarray,
     if len(R_g2b) < 8:
         raise RuntimeError(f"有效位姿对不足 {len(R_g2b)} < 8")
 
-    logger.info("解算手眼矩阵 AX=XB（TSAI 法）...")
-    R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
-        R_g2b, t_g2b, R_t2c, t_t2c, method=cv2.CALIB_HAND_EYE_TSAI)
+    # 位姿多样性检查——位姿无变化时 AX=XB 不可解（审核+现场实测教训）
+    from handeye_tsai import check_pose_diversity
+    diverse_ok, diversity_report = check_pose_diversity(R_g2b, t_g2b)
+    logger.info(f"位姿多样性: {diversity_report}")
+    if not diverse_ok:
+        raise RuntimeError(
+            f"位姿多样性不足，解算结果无效。请重新采集："
+            f"必须掰动机械臂本体（不同角度+位置），而不是只移动标定纸。\n"
+            f"  检测: {diversity_report}")
+
+    logger.info("解算手眼矩阵 AX=XB（TSAI 法, OpenCV 4/5 双版本兼容）...")
+    from handeye_tsai import calibrate_handeye_compat
+    R_cam2gripper, t_cam2gripper = calibrate_handeye_compat(
+        R_g2b, t_g2b, R_t2c, t_t2c)
     logger.info(f"R_cam2gripper:\n{R_cam2gripper}")
     logger.info(f"t_cam2gripper (m): {t_cam2gripper.ravel()}")
     np.savez(CALIB_DIR / "handeye_matrix.npz",
