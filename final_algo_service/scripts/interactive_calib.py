@@ -242,6 +242,8 @@ def _calibrate_charuco_compat(corners_list, ids_list, board, img_size):
 def _save_handeye_progress(save_dir, R_g2b, t_g2b, R_t2c, t_t2c):
     """位姿对即时存档（JSON）——支持中断后离线重算"""
     import json
+    from pathlib import Path
+    save_dir = Path(save_dir)
     data = {
         "R_g2b": [m.tolist() for m in R_g2b],
         "t_g2b": [v.ravel().tolist() for v in t_g2b],
